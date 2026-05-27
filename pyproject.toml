@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kickvoice"
+version = "0.1.0"
+description = "Speaker identification on Kick.com live streams"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "torchaudio>=2.2",
+    "speechbrain>=1.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "streamlink>=6.0",
+]
+
+[project.optional-dependencies]
+youtube = ["yt-dlp>=2024.0"]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+kickvoice = "kickvoice.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kickvoice*"]
