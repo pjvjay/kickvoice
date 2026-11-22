@@ -88,6 +88,38 @@ class FakeCapture:
         finally:
             self.closed = True
 
+    def stop(self):
+        pass
+
+
+class PacedCapture(FakeCapture):
+    """
+    Like a live stream: each block is only released when the test calls
+    `release(n)`, so tests can act between blocks (e.g. save a voice mid-stream).
+    """
+
+    def __init__(self, pcm: bytes):
+        super().__init__(pcm)
+        self.gate = __import__("threading").Semaphore(0)
+        self.stopped = False
+        self.blocks_served = 0
+
+    def release(self, n: int = 1):
+        for _ in range(n):
+            self.gate.release()
+
+    def capture_chunks(self, chunk_duration_s=None, chunk_stride_s=None):
+        for chunk in super().capture_chunks(chunk_duration_s, chunk_stride_s):
+            self.gate.acquire()
+            if self.stopped:
+                return
+            self.blocks_served += 1
+            yield chunk
+
+    def stop(self):
+        self.stopped = True
+        self.gate.release()
+
 
 class ScriptedInput:
     """Feeds canned answers to Reviewer prompts; records what was asked."""
@@ -259,3 +291,36 @@ class ScriptedLLM:
             text = _json.dumps(text)
         return LLMReply(text=text, model=self.model, input_tokens=len(prompt) // 4,
                         output_tokens=len(text) // 4)
+
+
+# ── research CLI fixtures (shared by the research test modules) ──
+
+@pytest.fixture
+def run(rconfig, tmp_path, monkeypatch):
+    """Invoke the CLI against an isolated config whose services are faked.
+    (test_cli.py defines its own `run`, which takes precedence there.)"""
+    from click.testing import CliRunner
+
+    from kickvoice.cli import cli
+
+    cfg_path = tmp_path / "config.json"
+    rconfig.save(cfg_path)
+    runner = CliRunner()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    def _run(*args, input=None, expect_ok=True):
+        result = runner.invoke(cli, ["--config", str(cfg_path), *args], input=input, obj={})
+        if expect_ok and result.exit_code != 0:
+            raise AssertionError(f"exit {result.exit_code}: {result.output}\n{result.exception!r}")
+        return result
+    return _run
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """Make every command use a scripted model."""
+    def install(llm):
+        import kickvoice.research.llm as llm_mod
+        monkeypatch.setattr(llm_mod, "make_llm", lambda config: llm)
+        return llm
+    return install

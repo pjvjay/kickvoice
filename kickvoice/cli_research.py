@@ -122,77 +122,156 @@ def research_add(ctx, name, voice_profile, description, **handles):
     console.hint(f"         kickvoice research collect \"{name}\"")
 
 
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
 @research.command("discover")
 @click.argument("name")
-@click.option("-y", "--yes", is_flag=True, help="Confirm every account found on the chosen record.")
+@click.option("--wikidata", "qid", help="Link this exact Wikidata record (e.g. Q12345).")
+@click.option("-y", "--yes", is_flag=True,
+              help="Confirm the record's accounts without asking. Only applies to an exact "
+                   "match (a handle you gave, or --wikidata) — never to a name search.")
 @_platform_options
 @click.pass_context
-def research_discover(ctx, name, yes, **handles):
+def research_discover(ctx, name, qid, yes, **handles):
     """
     Find NAME's official accounts via Wikidata, and confirm which to use.
 
     Wikidata records the accounts a person publicly claims, so this never
-    links anonymous or look-alike accounts. Give a known handle (e.g. --x)
-    for an exact match; otherwise it searches by name.
+    links anonymous or look-alike accounts. Only records of people are
+    considered (not games, companies or shows). The best evidence is a
+    handle you know (e.g. --x) or the record id (--wikidata); a name search
+    is a fallback that always needs you to choose.
     """
     from kickvoice.pipelines.research import discover
     from kickvoice.research.net import Fetcher, NetError
-    from kickvoice.research.store import CANDIDATE, CONFIRMED, REJECTED
 
     config = _config(ctx)
     known = {k.removesuffix("_handle"): v for k, v in handles.items() if v}
     try:
-        candidates = discover(Fetcher(config), config, name, known)
+        result = discover(Fetcher(config), config, name, known, qid=qid)
     except NetError as e:
         raise click.ClickException(f"Wikidata lookup failed: {e}") from e
-    if not candidates:
-        console.info(f"No Wikidata record found for '{name}'. Add accounts yourself with "
+
+    for handle in result.unmatched_handles:
+        console.hint(f"   No Wikidata record lists {handle}.")
+    for record in result.skipped:
+        console.hint(f"   Skipped {record.qid} \"{record.label}\" — "
+                     f"{record.description or 'no description'} (not a person)")
+    if not result.candidates:
+        console.info(f"No person matching '{name}' on Wikidata. Add accounts yourself with "
                      "`research add`.")
         return
 
-    interactive = sys.stdin.isatty() and not yes
-    chosen = candidates[0]
-    if len(candidates) > 1 or interactive:
-        console.echo()
-        for i, c in enumerate(candidates, 1):
-            console.echo(f"  [{i}] {c.label} ({c.qid}) — {c.description or 'no description'}"
-                         f" · {len(c.accounts)} account(s)")
-        if interactive:
-            pick = click.prompt("Which one is them? (0 = none)", type=int, default=1)
-            if pick == 0 or pick > len(candidates):
-                console.info("Nothing linked.")
-                return
-            chosen = candidates[pick - 1]
-        elif len(candidates) > 1 and not known:
+    interactive = _interactive() and not yes
+    strong = result.strong
+    if len(strong) == 1:
+        chosen = strong[0]
+        console.info(f"\nMatched {chosen.record.label} ({chosen.record.qid}) — "
+                     f"{chosen.record.description or 'no description'} · via {chosen.detail}")
+        if interactive and not click.confirm("Is this them?", default=True):
+            console.info("Nothing linked.")
+            return
+    else:
+        _print_candidates(result.candidates)
+        if not interactive:
+            if strong:
+                reason = "Several records list that account"
+            else:
+                reason = (("None of your handles is on Wikidata, and a" if result.unmatched_handles
+                           else "A") + " name search alone isn't enough to link someone")
             raise click.ClickException(
-                "Several people match that name; re-run in a terminal to choose, or pass a "
-                "known handle (e.g. --x) for an exact match.")
+                f"{reason}. Re-run in a terminal to choose, or pass the record id, e.g. "
+                f"--wikidata {result.candidates[0].record.qid}")
+        pick = click.prompt("Which one is them? (0 = none)", type=int, default=0)
+        if not 1 <= pick <= len(result.candidates):
+            console.info("Nothing linked.")
+            return
+        chosen = result.candidates[pick - 1]
 
     with _store(ctx) as store:
-        person = store.get_person(name) or store.add_person(name)
-        person.wikidata_id = chosen.qid
-        person.description = person.description or chosen.description
-        store.update_person(person)
-        found = [(p, h, u) for p, h, u in chosen.accounts]
-        if chosen.wikipedia_title:
-            found.insert(0, ("wikipedia", chosen.wikipedia_title,
-                             _account_url("wikipedia", chosen.wikipedia_title)))
-        for platform, handle, url in found:
-            acct = store.add_account(person.id, platform, handle, url, status=CANDIDATE,
-                                     found_via=f"wikidata {chosen.qid}")
-            if acct.status == CONFIRMED:
-                continue
-            if yes:
-                status = CONFIRMED
-            elif interactive:
-                status = CONFIRMED if click.confirm(f"  Use {platform}: {handle}?", default=True) else REJECTED
-            else:
-                continue
-            store.set_account_status(acct.id, status)
+        _link_record(store, name, chosen.record, confirm_all=yes and chosen.strong,
+                     interactive=interactive)
+        person = store.get_person(name)
         accounts = store.accounts(person.id)
     _print_accounts(accounts)
-    if any(a.status == CANDIDATE for a in accounts):
+    if any(a.status == "candidate" for a in accounts):
         console.hint(f"\n   Confirm candidates: kickvoice research accounts \"{name}\" --confirm ID")
+
+
+def _print_candidates(candidates):
+    console.echo()
+    for i, c in enumerate(candidates, 1):
+        how = f"lists {c.detail}" if c.strong else "name match only"
+        console.echo(f"  [{i}] {c.record.label} ({c.record.qid}) — "
+                     f"{c.record.description or 'no description'} · "
+                     f"{len(c.record.accounts)} account(s) · {how}")
+
+
+def _link_record(store, name, record, confirm_all: bool, interactive: bool):
+    """Link a Wikidata person record, asking about each account when interactive."""
+    from kickvoice.pipelines.research import link_record
+    from kickvoice.research.store import CONFIRMED, REJECTED
+
+    def decide(platform, handle):
+        if confirm_all:
+            return CONFIRMED
+        if interactive:
+            return CONFIRMED if click.confirm(f"  Use {platform}: {handle}?", default=True) else REJECTED
+        return None
+
+    result = link_record(store, name, record, decide)
+    if result.relinked_from:
+        dropped = result.rejected
+        console.warn(f"Re-linked {result.person.name} from {result.relinked_from} to {record.qid}."
+                     + (f" Rejected {len(dropped)} account(s) from the old record: "
+                        f"{', '.join(f'{a.platform}:{a.handle}' for a in dropped)}" if dropped else ""))
+        if dropped:
+            console.hint(f"   Remove what was collected from them: "
+                         f"kickvoice research accounts \"{result.person.name}\" --purge")
+
+
+@research.command("unlink")
+@click.argument("name")
+@click.option("--purge", is_flag=True, help="Also delete what was collected from those accounts.")
+@click.pass_context
+def research_unlink(ctx, name, purge):
+    """
+    Undo a Wikidata link: reject the accounts it brought in and clear the
+    description it set. Accounts you added yourself are kept.
+    """
+    with _store(ctx) as store:
+        person = _person(store, name)
+        if not person.wikidata_id:
+            console.info(f"{person.name} isn't linked to a Wikidata record.")
+            return
+        from kickvoice.pipelines.research import reject_wikidata_accounts
+
+        previous = person.wikidata_id
+        dropped = reject_wikidata_accounts(store, person, previous)
+        person.wikidata_id = None
+        person.description = ""
+        store.update_person(person)
+        removed = _purge_rejected(store, person) if purge else 0
+    console.success(f"Unlinked {person.name} from {previous}; rejected {len(dropped)} account(s)"
+                    + (f", deleted {removed} document(s)" if purge else ""))
+    if not purge and dropped:
+        console.hint(f"   Remove what was collected from them: "
+                     f"kickvoice research accounts \"{person.name}\" --purge")
+    console.hint(f"   Set a description: kickvoice research add \"{person.name}\" --description \"...\"")
+
+
+def _purge_rejected(store, person) -> int:
+    from kickvoice.pipelines.research import purge_rejected
+
+    return purge_rejected(store, person)
+
+
+def _rejected_document_count(store, person) -> int:
+    from kickvoice.pipelines.research import purge_rejected
+
+    return purge_rejected(store, person, dry_run=True)
 
 
 def _print_accounts(accounts):
@@ -205,9 +284,16 @@ def _print_accounts(accounts):
 @click.argument("name")
 @click.option("--confirm", "confirm_ids", multiple=True, type=int, help="Account id to confirm.")
 @click.option("--reject", "reject_ids", multiple=True, type=int, help="Account id to reject.")
+@click.option("--purge", is_flag=True,
+              help="Delete everything collected from rejected accounts (and its claims).")
 @click.pass_context
-def research_accounts(ctx, name, confirm_ids, reject_ids):
-    """List NAME's accounts; confirm or reject candidates."""
+def research_accounts(ctx, name, confirm_ids, reject_ids, purge):
+    """
+    List NAME's accounts; confirm or reject them.
+
+    Rejected accounts are ignored from then on; --purge also deletes what
+    was already collected from them.
+    """
     from kickvoice.research.store import CONFIRMED, REJECTED
 
     with _store(ctx) as store:
@@ -218,11 +304,18 @@ def research_accounts(ctx, name, confirm_ids, reject_ids):
                 if account_id not in valid:
                     raise click.ClickException(f"No account {account_id} for {person.name}")
                 store.set_account_status(account_id, status)
+        removed = _purge_rejected(store, person) if purge else 0
+        leftover = 0 if purge else _rejected_document_count(store, person)
         accounts = store.accounts(person.id)
     if not accounts:
         console.info("No accounts yet.")
         return
     _print_accounts(accounts)
+    if purge:
+        console.success(f"Deleted {removed} document(s) collected from rejected accounts")
+    elif leftover:
+        console.hint(f"\n   {leftover} document(s) came from rejected accounts (ignored). "
+                     f"Delete them: kickvoice research accounts \"{person.name}\" --purge")
 
 
 @research.command("collect")
@@ -387,6 +480,10 @@ def research_show(ctx, name, topic):
                      f"({', '.join(f'{k} {v}' for k, v in sorted(stats['by_source'].items())) or '—'})")
         console.info(f"Excerpts: {stats['chunks']} ({stats['analyzed']} analysed) · "
                      f"Claims: {stats['claims']}")
+        leftover = _rejected_document_count(store, person)
+        if leftover:
+            console.warn(f"{leftover} document(s) came from rejected accounts (ignored). Delete "
+                         f"them: kickvoice research accounts \"{person.name}\" --purge")
         if topic:
             claims = store.claims(person.id, topic=topic)
             console.heading(f"\nClaims on '{topic}' ({len(claims)})")

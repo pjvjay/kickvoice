@@ -115,11 +115,27 @@ class TranscriptionPipeline:
         self.on_utterance = on_utterance
         self.out = out
 
-        # Voiceprints are fixed for the run; new enrolments apply via `reattribute`.
+        # Voiceprints to recognise; `reload_profiles()` picks up new enrolments mid-run.
         self.names, self.matrix = self.profiles.embedding_matrix()
         self.stats = TranscriptionStats()
         self.session: TranscriptSession | None = None
         self._warned_slow = False
+        self._stop_requested = False
+        self._pending_profiles: tuple[list[str], np.ndarray] | None = None
+
+    def request_stop(self):
+        """Stop after the current block (safe to call from another thread)."""
+        self._stop_requested = True
+        self.capture.stop()          # unblocks a stream read; no-op for files
+
+    def reload_profiles(self, profiles: ProfileStore | None = None):
+        """
+        Recognise voices enrolled since the run started. Safe from another
+        thread: the new voiceprints are swapped in by the pipeline's own
+        thread at the start of its next block, never mid-block.
+        """
+        store = profiles if profiles is not None else ProfileStore(config=self.config)
+        self._pending_profiles = store.embedding_matrix()
 
     # ── main loop ────────────────────────────────────────────────
 
@@ -161,7 +177,7 @@ class TranscriptionPipeline:
                 cut = self._process(piece, piece_offset, final=False)
                 carry = piece[cut * 2:]
                 carry_offset = piece_offset + cut
-                if max_duration_s and consumed / self.sr >= max_duration_s:
+                if self._stop_requested or (max_duration_s and consumed / self.sr >= max_duration_s):
                     break
         except KeyboardInterrupt:
             pass
@@ -199,6 +215,8 @@ class TranscriptionPipeline:
         Returns how many samples were consumed; the rest is carried over so
         an utterance running past the block edge is transcribed whole.
         """
+        if self._pending_profiles is not None:
+            (self.names, self.matrix), self._pending_profiles = self._pending_profiles, None
         started = time.monotonic()
         n = len(pcm) // 2
         cut = n

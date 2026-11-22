@@ -9,21 +9,31 @@ from __future__ import annotations
 
 import click
 
+# When kickvoice runs as an MCP server over stdio, stdout carries the protocol
+# itself, so every human-readable message must go to stderr instead.
+_to_stderr = False
+
+
+def use_stderr(enabled: bool = True):
+    global _to_stderr
+    _to_stderr = enabled
+
 
 def echo(message: str = "", **kwargs):
+    kwargs.setdefault("err", _to_stderr)
     click.echo(message, **kwargs)
 
 
 def info(message: str):
-    click.echo(message)
+    click.echo(message, err=_to_stderr)
 
 
 def success(message: str):
-    click.secho(f"✅ {message}", fg="green")
+    click.secho(f"✅ {message}", fg="green", err=_to_stderr)
 
 
 def warn(message: str):
-    click.secho(f"⚠  {message}", fg="yellow")
+    click.secho(f"⚠  {message}", fg="yellow", err=_to_stderr)
 
 
 def error(message: str):
@@ -31,11 +41,11 @@ def error(message: str):
 
 
 def hint(message: str):
-    click.secho(message, fg="bright_black")
+    click.secho(message, fg="bright_black", err=_to_stderr)
 
 
 def heading(message: str):
-    click.secho(message, bold=True)
+    click.secho(message, bold=True, err=_to_stderr)
 
 
 def table(headers: list[str], rows: list[list[str]], widths: list[int] | None = None):
@@ -45,10 +55,10 @@ def table(headers: list[str], rows: list[list[str]], widths: list[int] | None = 
         for i, h in enumerate(headers)
     ]
     line = "".join(str(h).ljust(w) for h, w in zip(headers, widths)).rstrip()
-    click.secho(line, bold=True)
-    click.echo("-" * max(len(line), sum(widths) - 2))
+    click.secho(line, bold=True, err=_to_stderr)
+    click.echo("-" * max(len(line), sum(widths) - 2), err=_to_stderr)
     for row in rows:
-        click.echo("".join(str(c).ljust(w) for c, w in zip(row, widths)).rstrip())
+        click.echo("".join(str(c).ljust(w) for c, w in zip(row, widths)).rstrip(), err=_to_stderr)
 
 
 def fmt_duration(seconds: float) -> str:

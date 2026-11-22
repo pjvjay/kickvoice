@@ -279,6 +279,7 @@ replies grounded in that record.
 # 1. Who are they? Link accounts (yours are trusted; discovered ones need your OK)
 ./run.sh research add "Jane Pundit" --x JanePundit --youtube @janepundit --voice Jane
 ./run.sh research discover "Jane Pundit" --x JanePundit     # official accounts via Wikidata
+./run.sh research discover "Jane Pundit" --wikidata Q12345  # …or name the exact record
 
 # 2. Collect their public record
 ./run.sh research collect "Jane Pundit"                     # Wikipedia, YouTube captions, X, Reddit, site
@@ -318,6 +319,32 @@ permitted access:
 | Their website, web articles | page fetch (robots.txt respected); search via Brave | `BRAVE_API_KEY` for search |
 | Your stream transcripts | lines kickvoice attributed to their voice | their voice profile |
 | Anything else you have | `research import NAME file.jsonl` (or an X data export) | — |
+
+**Linking the right person.** `discover` only ever links records of
+**people**. Games, companies, shows and fictional characters also have
+official accounts on Wikidata (the video game *Destiny* owns @DestinyTheGame),
+so those are skipped and reported. How it finds the record matters:
+
+| Evidence | Example | `-y` auto-confirms? |
+|---|---|---|
+| A record lists a handle you gave | `--x TheOmniLiberal` | yes |
+| The record id you gave | `--wikidata Q12345` | yes |
+| Name search only | `discover "Destiny"` | **no**: you choose in a terminal, or it stops and lists the `--wikidata` ids |
+
+If a handle you give isn't on Wikidata, it says so instead of silently
+using a name match.
+
+**Fixing a wrong link.** Every collected document remembers which account
+it came from, and documents from a **rejected** account are ignored from
+then on.
+
+```bash
+./run.sh research discover "Destiny" --wikidata Q12345 -y   # re-link: the old record's accounts are rejected
+./run.sh research unlink "Destiny" --purge                  # or undo the link entirely
+./run.sh research accounts "Destiny" --reject 7 --purge     # reject one account and delete its data
+```
+
+`research show` warns when data from rejected accounts is still stored.
 
 **What it doesn't do:**
 - **Discord.** There's no public API for a user's messages, and scraping
@@ -363,6 +390,92 @@ enables semantic search on top of the built-in full-text search.
 (typically 1–4s). If the model falls behind, stale points are skipped so
 suggestions stay current. Every suggestion is logged to
 `~/.kickvoice/debates/*.jsonl` for review afterwards.
+
+### 9. Agent mode (MCP): a chat copilot while you watch
+
+`./run.sh mcp` runs kickvoice as an [MCP](https://modelcontextprotocol.io)
+server. An AI agent (Claude Desktop, Claude Code, or any MCP host) can then
+listen to the stream you're watching, know who's speaking, look up their
+record, and draft replies **for you to paste into chat yourself**.
+
+**Connect it**
+
+```bash
+# Claude Code
+claude mcp add kickvoice -- /absolute/path/to/kickvoice/run.sh mcp
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "kickvoice": {
+      "command": "/absolute/path/to/kickvoice/run.sh",
+      "args": ["mcp"],
+      "env": {"ANTHROPIC_API_KEY": "…", "X_BEARER_TOKEN": "…"}
+    }
+  }
+}
+```
+
+The `env` keys are only needed for the research tools that use them.
+
+**Use it.** Pick the **`chat_copilot`** prompt (give it the stream URL and
+your chat style), or just ask: *"watch kick.com/somechannel and help me
+reply to Destiny"*. The agent then loops:
+
+```
+live_next_point ──► point + who said it + evidence from their record
+      │                 (waits until someone finishes making a point)
+      ▼
+agent drafts 2-3 replies in your voice, grounded in the evidence
+      │
+check_chat_message ──► length ok? markdown stripped? quotes verbatim?
+      │
+you pick one ──► copy_to_clipboard ──► you paste it in chat
+```
+
+Unknown guest? The agent calls `live_voices`, asks you who they are,
+`save_voice`s them (later lines are then labelled with the name), and can
+research them in the background (`research_discover` → `research_collect`
+→ `research_analyze`, polled with `job_status`).
+
+| Tools | |
+|---|---|
+| Listening | `live_start`, `live_next_point`, `live_status`, `live_transcript`, `live_stop` |
+| Voices | `live_voices`, `save_voice` |
+| Research | `research_subjects`, `research_profile`, `research_search`, `research_claims`, `research_add`, `research_discover`, `research_link_record`, `research_collect`, `research_analyze`, `job_status` |
+| Chat | `check_chat_message`, `copy_to_clipboard` |
+
+**Drafts, not posts.** Nothing posts to chat. You read each draft, edit it
+if you like, and send it from your own account. The copilot prompt keeps
+replies to one per point (chats have slow mode and spam filters), argues
+with the point rather than the person, and doesn't invent facts. Words in
+quotation marks must match the cited evidence word for word, or
+`check_chat_message` rejects the draft.
+
+**Chat settings** (`config.json`):
+
+```json
+{"chat": {"max_chars": 500, "allow_links": false,
+          "style": "lowercase, short, dry humour, no emojis"}}
+```
+
+**Latency.** Each point reports `behind_live_s`, and `live_status` reports
+`realtime_factor`. In testing on CPU, points arrived about 10–25 seconds
+after they were said. That's an 8-second transcription block, plus waiting
+for the speaker to finish their point, plus processing. The copilot skips
+points that are more than about a minute old. A GPU, or a smaller Whisper
+model, shortens the gap.
+
+**Good to know**
+- Reply quality depends on your agent's model. Evidence quality depends on
+  research done *before* the stream: live research jobs take minutes.
+- The MCP server writes nothing to stdout except the protocol. Logs go to
+  stderr, which hosts usually show in their MCP log view.
+- Saving a voice mid-stream from a few seconds of speech gives a weak
+  profile. `save_voice` warns you, and you can merge more audio into it later.
 
 ## Make Targets
 
@@ -541,6 +654,11 @@ kickvoice/
 │   │   ├── attribution.py# Word → speaker alignment rules (pure functions)
 │   │   ├── refine.py     # Whole-session attribution (voice groups)
 │   │   └── store.py      # SQLite transcript store + full-text search
+│   ├── agent/            # MCP server for AI agents
+│   │   ├── server.py     # Tools, copilot prompt, stdio entry point
+│   │   ├── live.py       # Background live session the agent polls
+│   │   ├── jobs.py       # Background jobs (collect / analyze)
+│   │   └── chat.py       # Chat-draft checks (length, markdown, verbatim quotes)
 │   ├── research/         # Opposition research + live counters
 │   │   ├── net.py        # Polite HTTP (rate limits, cache, robots.txt)
 │   │   ├── llm.py        # Anthropic / OpenAI-compatible clients, JSON validation

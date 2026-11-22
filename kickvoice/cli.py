@@ -666,6 +666,30 @@ cli.add_command(research)
 cli.add_command(debate)
 
 
+@cli.command("mcp")
+@click.pass_context
+def mcp_server(ctx):
+    """
+    Run kickvoice as an MCP server (stdio) for Claude Desktop, Claude Code,
+    or any MCP host.
+
+    The agent gets tools to listen to a stream, recognise and save voices,
+    research speakers, and draft chat replies for you to paste.
+
+    \b
+    Claude Code:
+      claude mcp add kickvoice -- /path/to/kickvoice/run.sh mcp
+    """
+    # stdout is the protocol channel from here on: everything human goes to stderr.
+    console.use_stderr()
+    try:
+        from kickvoice.agent.server import serve_stdio
+    except ImportError as e:
+        raise click.ClickException(
+            f"MCP support needs the 'mcp' package: pip install -e '.[agent]' ({e})") from e
+    serve_stdio(get_config(ctx))
+
+
 def main():
     # prog_name keeps the help text saying "kickvoice" however it was started
     # (./run.sh, python -m kickvoice, or the installed entry point).

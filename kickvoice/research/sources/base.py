@@ -1,7 +1,7 @@
 """Shared collector plumbing."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from kickvoice.config import Config
@@ -38,10 +38,19 @@ class SourceContext:
     store: ResearchStore
     person: Person
     progress: Callable[[str], None] = lambda _msg: None
+    # The linked account being collected (None for searches, imports,
+    # transcripts). Recorded on every document so rejecting an account can
+    # remove what came from it.
+    account_id: int | None = None
+
+    def for_account(self, account_id: int) -> "SourceContext":
+        return replace(self, account_id=account_id)
 
     def save(self, doc: Document, chunks: list[Chunk] | None = None,
              stats: CollectStats | None = None) -> str:
         """Store a document, chunking its text if no chunks are given."""
+        if doc.account_id is None:
+            doc.account_id = self.account_id
         if chunks is None:
             chunks = chunk_text(doc.text)
         _, outcome = self.store.upsert_document(doc, chunks)

@@ -2,41 +2,10 @@
 import json
 import re
 
-import pytest
-from click.testing import CliRunner
 
 from conftest import ScriptedLLM
-from kickvoice.cli import cli
 from kickvoice.research.store import ResearchStore
 from test_research_sources import wikidata_routes, x_routes
-
-
-@pytest.fixture
-def run(rconfig, tmp_path, monkeypatch):
-    cfg_path = tmp_path / "config.json"
-    rconfig.save(cfg_path)
-    runner = CliRunner()
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-
-    def _run(*args, input=None, expect_ok=True):
-        result = runner.invoke(cli, ["--config", str(cfg_path), *args], input=input, obj={})
-        if expect_ok and result.exit_code != 0:
-            raise AssertionError(f"exit {result.exit_code}: {result.output}\n{result.exception!r}")
-        return result
-    return _run
-
-
-@pytest.fixture
-def fake_llm(monkeypatch):
-    """Make every command use a scripted model."""
-    holder = {}
-
-    def install(llm):
-        import kickvoice.research.llm as llm_mod
-        monkeypatch.setattr(llm_mod, "make_llm", lambda config: llm)
-        holder["llm"] = llm
-        return llm
-    return install
 
 
 def db(rconfig):
@@ -99,7 +68,7 @@ def test_discover_without_tty_leaves_candidates(run, rconfig, fake_web):
 
 def test_discover_nothing_found(run, fake_web):
     fake_web.route("GET", "/wd/api.php", json={"search": []})
-    assert "No Wikidata record" in run("research", "discover", "Mystery Person").output
+    assert "No person matching" in run("research", "discover", "Mystery Person").output
 
 
 def test_collect_import_analyze_search_brief(run, rconfig, fake_web, fake_llm, monkeypatch, tmp_path):

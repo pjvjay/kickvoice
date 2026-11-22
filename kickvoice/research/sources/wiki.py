@@ -8,7 +8,7 @@ keeps the research about the right person and never unmasks alt accounts.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from kickvoice.research.net import Fetcher
@@ -27,20 +27,38 @@ ACCOUNT_PROPERTIES = {
 }
 PLATFORM_PROPERTY = {platform: prop for prop, (platform, _) in ACCOUNT_PROPERTIES.items()}
 
+INSTANCE_OF = "P31"
+HUMAN = "Q5"
+
 
 @dataclass
 class WikidataPerson:
+    """A Wikidata record (not necessarily a person — check `is_human`)."""
     qid: str
     label: str
     description: str
     wikipedia_title: str | None
     accounts: list[tuple[str, str, str]]      # (platform, handle, url)
+    instance_of: list[str] = field(default_factory=list)
+
+    @property
+    def is_human(self) -> bool:
+        """
+        Research subjects are individuals. Games, companies, shows and
+        fictional characters also have official accounts on Wikidata (e.g.
+        the video game "Destiny" owns @DestinyTheGame), so never link those.
+        """
+        return HUMAN in self.instance_of
 
 
 # ── Wikidata ─────────────────────────────────────────────────────
 
-def search_people(fetcher: Fetcher, api: str, name: str, limit: int = 5) -> list[dict]:
-    """Wikidata entities matching a name: [{id, label, description}]."""
+def search_people(fetcher: Fetcher, api: str, name: str, limit: int = 10) -> list[dict]:
+    """
+    Wikidata records matching a name: [{id, label, description}]. Not only
+    people — a name like "Destiny" also matches a video game — so callers
+    must filter on `is_human`.
+    """
     data = fetcher.get_json(api, {
         "action": "wbsearchentities", "search": name, "language": "en",
         "type": "item", "limit": limit, "format": "json"})
@@ -53,6 +71,7 @@ def find_by_account(fetcher: Fetcher, api: str, platform: str, handle: str) -> l
     prop = PLATFORM_PROPERTY.get(platform)
     if not prop:
         return []
+    handle = handle.strip().lstrip("@")
     found: list[str] = []
     for value in dict.fromkeys([handle, handle.lower()]):    # stored case varies
         data = fetcher.get_json(api, {
@@ -64,27 +83,51 @@ def find_by_account(fetcher: Fetcher, api: str, platform: str, handle: str) -> l
     return found
 
 
+def get_people(fetcher: Fetcher, api: str, qids: list[str]) -> list[WikidataPerson]:
+    """Fetch records in one request per 50 ids, preserving order; missing ids are skipped."""
+    people: list[WikidataPerson] = []
+    for i in range(0, len(qids), 50):
+        batch = qids[i:i + 50]
+        data = fetcher.get_json(api, {
+            "action": "wbgetentities", "ids": "|".join(batch), "format": "json",
+            "props": "labels|descriptions|claims|sitelinks", "languages": "en"})
+        entities = data.get("entities", {})
+        for qid in batch:
+            entity = entities.get(qid)
+            if entity and "missing" not in entity:
+                people.append(_parse_entity(qid, entity))
+    return people
+
+
 def get_person(fetcher: Fetcher, api: str, qid: str) -> WikidataPerson:
-    data = fetcher.get_json(api, {
-        "action": "wbgetentities", "ids": qid, "format": "json",
-        "props": "labels|descriptions|claims|sitelinks", "languages": "en"})
-    entity = data.get("entities", {}).get(qid)
-    if not entity or "missing" in entity:
+    people = get_people(fetcher, api, [qid])
+    if not people:
         raise ValueError(f"Wikidata item {qid} not found")
+    return people[0]
+
+
+def _parse_entity(qid: str, entity: dict) -> WikidataPerson:
+    claims = entity.get("claims", {})
     accounts = []
     for prop, (platform, template) in ACCOUNT_PROPERTIES.items():
-        for statement in entity.get("claims", {}).get(prop, []):
+        for statement in claims.get(prop, []):
             if statement.get("rank") == "deprecated":
                 continue        # e.g. an old, abandoned handle
             value = statement.get("mainsnak", {}).get("datavalue", {}).get("value")
             if isinstance(value, str) and value:
                 accounts.append((platform, value, template.format(value)))
+    instance_of = []
+    for statement in claims.get(INSTANCE_OF, []):
+        value = statement.get("mainsnak", {}).get("datavalue", {}).get("value")
+        if isinstance(value, dict) and value.get("id"):
+            instance_of.append(value["id"])
     return WikidataPerson(
         qid=qid,
         label=entity.get("labels", {}).get("en", {}).get("value", qid),
         description=entity.get("descriptions", {}).get("en", {}).get("value", ""),
         wikipedia_title=entity.get("sitelinks", {}).get("enwiki", {}).get("title"),
         accounts=accounts,
+        instance_of=instance_of,
     )
 
 

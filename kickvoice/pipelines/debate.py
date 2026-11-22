@@ -29,7 +29,7 @@ from kickvoice.console import fmt_clock
 from kickvoice.pipelines.session import source_slug
 from kickvoice.research.counter import CounterEngine, Suggestion
 from kickvoice.research.store import AUTHORSHIP_LABELS
-from kickvoice.transcripts.attribution import UNKNOWN
+from kickvoice.transcripts.attribution import CONFIDENT, PROBABLE, UNKNOWN
 from kickvoice.transcripts.store import Utterance
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,10 @@ class Point:
     text: str
     start_s: float
     context: list[str]
+    end_s: float = 0.0                # when the point's last line ended (stream offset)
+    speaker: str | None = None        # voice profile name (None = unrecognised voice)
+    label: str = ""                   # how the speaker is shown ("Jane", "Jane?", "(unknown)")
+    attribution: str = UNKNOWN        # weakest attribution among the point's lines
 
 
 class PointAggregator:
@@ -68,16 +72,24 @@ class PointAggregator:
     def add(self, u: Utterance, now: float | None = None) -> Point | None:
         point = None
         if self.is_opponent(u):
+            if self._buffer and _key(self._buffer[0]) != _key(u):
+                # A different tracked speaker took over: end the previous point
+                # (points never mix two people's words).
+                point = self._end_turn()
             self._buffer.append(u)
             self._last_line_at = now if now is not None else time.monotonic()
-            if self.buffered_words >= self.max_words:
+            if point is None and self.buffered_words >= self.max_words:
                 point = self._flush()
-        elif self._buffer and self.buffered_words >= max(5, self.min_words // 2):
-            point = self._flush()       # they stopped; someone else is talking
         elif self._buffer:
-            self._buffer.clear()        # a short aside — not worth a response
+            point = self._end_turn()    # they stopped; someone else is talking
         self.context.append(f"{self.label(u)}: {u.text}")
         return point
+
+    def _end_turn(self) -> Point | None:
+        if self.buffered_words >= max(5, self.min_words // 2):
+            return self._flush()
+        self._buffer.clear()            # a short aside — not worth a response
+        return None
 
     def flush_if_idle(self, pause_s: float, now: float | None = None) -> Point | None:
         now = now if now is not None else time.monotonic()
@@ -87,10 +99,18 @@ class PointAggregator:
         return None
 
     def _flush(self) -> Point:
-        text = " ".join(u.text for u in self._buffer)
-        point = Point(text, self._buffer[0].start_s, list(self.context))
+        first = self._buffer[0]
+        levels = {u.attribution for u in self._buffer}
+        weakest = next(l for l in (UNKNOWN, PROBABLE, CONFIDENT) if l in levels)
+        point = Point(" ".join(u.text for u in self._buffer), first.start_s, list(self.context),
+                      end_s=self._buffer[-1].end_s, speaker=first.speaker,
+                      label=self.label(first), attribution=weakest)
         self._buffer.clear()
         return point
+
+
+def _key(u: Utterance) -> str | None:
+    return (u.speaker or "").casefold() or None
 
 
 class DebateAssistant:

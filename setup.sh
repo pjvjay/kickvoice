@@ -158,7 +158,7 @@ fi
 
 # ── 6. Install kickvoice and remaining deps ──────────────────
 info "Installing kickvoice and dependencies..."
-pip install -e "${SCRIPT_DIR}[youtube,transcribe,dev]" --quiet
+pip install -e "${SCRIPT_DIR}[youtube,transcribe,agent,dev]" --quiet
 ok "kickvoice installed"
 
 # ── 7. Install streamlink ────────────────────────────────────

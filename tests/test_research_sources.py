@@ -63,6 +63,7 @@ WIKIDATA_ENTITY = {"entities": {"Q42": {
     "descriptions": {"en": {"value": "American political streamer"}},
     "sitelinks": {"enwiki": {"title": "Jane Pundit"}},
     "claims": {
+        "P31": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
         "P2002": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "JanePundit"}}},
                   {"rank": "deprecated", "mainsnak": {"datavalue": {"value": "OldJane"}}}],
         "P2397": [{"rank": "preferred", "mainsnak": {"datavalue": {"value": "UC" + "a" * 22}}}],
@@ -98,9 +99,13 @@ def test_wikidata_person_accounts(rconfig, fake_web):
 def test_discover_by_handle_then_by_name(rconfig, fake_web):
     wikidata_routes(fake_web)
     by_handle = discover(Fetcher(rconfig), rconfig, "whoever", {"x": "JanePundit"})
-    assert [p.qid for p in by_handle] == ["Q42"]
+    assert [(c.record.qid, c.matched_by, c.strong) for c in by_handle.candidates] == [
+        ("Q42", "account", True)]
+    assert not by_handle.searched_by_name
     by_name = discover(Fetcher(rconfig), rconfig, "Jane Pundit")
-    assert [p.qid for p in by_name] == ["Q42"]
+    assert [(c.record.qid, c.matched_by, c.strong) for c in by_name.candidates] == [
+        ("Q42", "name", False)]
+    assert wiki.get_person(Fetcher(rconfig), rconfig.research.wikidata_api, "Q42").is_human
 
 
 def test_collect_wikipedia_sections(ctx, store, person, rconfig, fake_web):

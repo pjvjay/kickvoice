@@ -37,13 +37,13 @@ install: venv ## Install kickvoice into venv (auto-detects platform)
 	else \
 		$(PIP) install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet; \
 	fi
-	@$(PIP) install -e ".[youtube,transcribe,dev]" --quiet
+	@$(PIP) install -e ".[youtube,transcribe,agent,dev]" --quiet
 	@$(PIP) install streamlink --quiet
 	@echo "✅ kickvoice installed"
 
 install-gpu: venv ## Install kickvoice with CUDA GPU support (Linux only)
 	@$(PIP) install torch torchaudio --quiet
-	@$(PIP) install -e ".[youtube,transcribe,dev]" --quiet
+	@$(PIP) install -e ".[youtube,transcribe,agent,dev]" --quiet
 	@$(PIP) install streamlink --quiet
 	@echo "✅ kickvoice installed (GPU)"
 

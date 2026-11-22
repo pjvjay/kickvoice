@@ -173,6 +173,18 @@ class DebateConfig:
     max_queued_points: int = 2
 
 
+@dataclass
+class ChatConfig:
+    """Chat-ready replies drafted by the MCP agent tools."""
+    # Longest message the target chat accepts (Kick and Twitch: 500).
+    max_chars: int = 500
+    # Many channels block or auto-mod links in chat.
+    allow_links: bool = False
+    # Your chat voice, so drafts sound like you: e.g. "lowercase, short,
+    # dry humour, no emojis". Paste a few of your real messages for best results.
+    style: str = ""
+
+
 SECTIONS = {
     "audio": AudioConfig,
     "embedding": EmbeddingConfig,
@@ -182,6 +194,7 @@ SECTIONS = {
     "llm": LLMConfig,
     "research": ResearchConfig,
     "debate": DebateConfig,
+    "chat": ChatConfig,
 }
 
 
@@ -195,6 +208,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     research: ResearchConfig = field(default_factory=ResearchConfig)
     debate: DebateConfig = field(default_factory=DebateConfig)
+    chat: ChatConfig = field(default_factory=ChatConfig)
     data_dir: Path = DEFAULT_DATA_DIR
     # Defaults to <data_dir>/profiles when not set explicitly.
     profiles_dir: Path | None = None

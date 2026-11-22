@@ -42,6 +42,11 @@ FIRST_HAND = (SELF, SELF_VOICE, SELF_CHANNEL)
 
 CONFIRMED, CANDIDATE, REJECTED = "confirmed", "candidate", "rejected"
 
+# Documents collected from an account you've since rejected are ignored
+# everywhere (search, analysis, briefs, live), even before they're purged.
+ACTIVE_DOC = ("(d.account_id IS NULL OR d.account_id NOT IN "
+              "(SELECT id FROM accounts WHERE status = 'rejected'))")
+
 
 @dataclass
 class Person:
@@ -77,6 +82,7 @@ class Document:
     published_at: str | None = None
     meta: dict = field(default_factory=dict)
     id: int | None = None
+    account_id: int | None = None      # which linked account it was collected from
 
 
 @dataclass
@@ -147,6 +153,7 @@ class ResearchStore:
         self.close()
 
     def _create_schema(self):
+        self._migrate()
         with self._db:
             self._db.executescript("""
                 CREATE TABLE IF NOT EXISTS persons (
@@ -169,6 +176,7 @@ class ResearchStore:
                     url TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
                     published_at TEXT, authorship TEXT NOT NULL, text TEXT NOT NULL,
                     content_hash TEXT NOT NULL, meta TEXT, fetched_at TEXT NOT NULL,
+                    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
                     UNIQUE (person_id, source, external_id));
                 CREATE TABLE IF NOT EXISTS chunks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,6 +215,14 @@ class ResearchStore:
                         VALUES ('delete', old.id, old.topic, old.claim, old.quote); END;
             """)
 
+    def _migrate(self):
+        """Bring databases created by earlier versions up to date."""
+        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(documents)")}
+        if cols and "account_id" not in cols:
+            with self._db:
+                self._db.execute("ALTER TABLE documents ADD COLUMN account_id INTEGER "
+                                 "REFERENCES accounts(id) ON DELETE SET NULL")
+
     # ── persons ──────────────────────────────────────────────────
 
     def add_person(self, name: str, voice_profile: str | None = None,
@@ -224,6 +240,14 @@ class ResearchStore:
 
     def get_person_by_id(self, person_id: int) -> Person | None:
         row = self._db.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
+        return Person(**dict(row)) if row else None
+
+    def person_by_voice(self, voice_profile: str | None) -> Person | None:
+        """The research subject linked to a voice profile (case-insensitive)."""
+        if not voice_profile:
+            return None
+        row = self._db.execute("SELECT * FROM persons WHERE voice_profile = ? COLLATE NOCASE",
+                               (voice_profile,)).fetchone()
         return Person(**dict(row)) if row else None
 
     def list_persons(self) -> list[Person]:
@@ -263,6 +287,32 @@ class ResearchStore:
         with self._db:
             self._db.execute("UPDATE accounts SET status = ? WHERE id = ?", (status, account_id))
 
+    def get_account(self, account_id: int) -> Account | None:
+        row = self._db.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        return _account(row) if row else None
+
+    def documents_from_account(self, account: Account) -> list[int]:
+        """
+        Ids of documents collected from `account`. Rows collected before
+        provenance was recorded (account_id NULL) are matched by URL/title.
+        """
+        ids = [r["id"] for r in self._db.execute(
+            "SELECT id FROM documents WHERE account_id = ?", (account.id,))]
+        legacy = self._db.execute(
+            "SELECT id, source, external_id, url, meta FROM documents"
+            " WHERE person_id = ? AND account_id IS NULL", (account.person_id,)).fetchall()
+        for row in legacy:
+            if _legacy_match(account, row):
+                ids.append(row["id"])
+        return ids
+
+    def delete_documents(self, document_ids: Iterable[int]) -> int:
+        """Delete documents with their chunks and claims (cascades)."""
+        ids = list(document_ids)
+        with self._db:
+            self._db.executemany("DELETE FROM documents WHERE id = ?", [(i,) for i in ids])
+        return len(ids)
+
     def accounts(self, person_id: int, status: str | None = None,
                  platform: str | None = None) -> list[Account]:
         sql, params = "SELECT * FROM accounts WHERE person_id = ?", [person_id]
@@ -289,22 +339,27 @@ class ResearchStore:
         with self._db:
             if existing and existing["content_hash"] == digest:
                 doc.id = existing["id"]
+                if doc.account_id is not None:
+                    self._db.execute("UPDATE documents SET account_id = ? WHERE id = ?"
+                                     " AND account_id IS NULL", (doc.account_id, doc.id))
                 return doc.id, "unchanged"
             if existing:
                 self._db.execute("DELETE FROM chunks WHERE document_id = ?", (existing["id"],))
                 self._db.execute(
                     "UPDATE documents SET url = ?, title = ?, published_at = ?, authorship = ?,"
-                    " text = ?, content_hash = ?, meta = ?, fetched_at = ?, kind = ? WHERE id = ?",
+                    " text = ?, content_hash = ?, meta = ?, fetched_at = ?, kind = ?,"
+                    " account_id = COALESCE(?, account_id) WHERE id = ?",
                     (doc.url, doc.title, doc.published_at, doc.authorship, doc.text, digest,
-                     json.dumps(doc.meta), _now(), doc.kind, existing["id"]))
+                     json.dumps(doc.meta), _now(), doc.kind, doc.account_id, existing["id"]))
                 doc.id, outcome = existing["id"], "updated"
             else:
                 cur = self._db.execute(
                     "INSERT INTO documents (person_id, source, kind, external_id, url, title,"
-                    " published_at, authorship, text, content_hash, meta, fetched_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " published_at, authorship, text, content_hash, meta, fetched_at, account_id)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc.person_id, doc.source, doc.kind, doc.external_id, doc.url, doc.title,
-                     doc.published_at, doc.authorship, doc.text, digest, json.dumps(doc.meta), _now()))
+                     doc.published_at, doc.authorship, doc.text, digest, json.dumps(doc.meta),
+                     _now(), doc.account_id))
                 doc.id, outcome = cur.lastrowid, "new"
             for seq, chunk in enumerate(chunks):
                 cur = self._db.execute(
@@ -329,7 +384,7 @@ class ResearchStore:
         sql = f"""
             SELECT c.*, d.id AS d_id FROM chunks c JOIN documents d ON d.id = c.document_id
             LEFT JOIN chunk_analysis a ON a.chunk_id = c.id
-            WHERE d.person_id = ? AND a.chunk_id IS NULL
+            WHERE d.person_id = ? AND a.chunk_id IS NULL AND {ACTIVE_DOC}
             ORDER BY d.published_at DESC, c.document_id, c.seq
             {'LIMIT ' + str(int(limit)) if limit else ''}"""
         rows = self._db.execute(sql, (person_id,)).fetchall()
@@ -365,13 +420,19 @@ class ResearchStore:
 
     def claims(self, person_id: int, topic: str | None = None,
                sincere_only: bool = False) -> list[Claim]:
-        sql, params = "SELECT * FROM claims WHERE person_id = ?", [person_id]
+        sql = ("SELECT c.* FROM claims c JOIN documents d ON d.id = c.document_id"
+               f" WHERE c.person_id = ? AND {ACTIVE_DOC}")
+        params = [person_id]
         if topic:
             sql += " AND topic LIKE ?"
             params.append(f"%{topic}%")
         if sincere_only:
             sql += " AND sincere = 1"
-        return [_claim(r) for r in self._db.execute(sql + " ORDER BY topic, published_at", params)]
+        return [_claim(r) for r in self._db.execute(sql + " ORDER BY c.topic, c.published_at", params)]
+
+    def chunk_text(self, chunk_id: int) -> str | None:
+        row = self._db.execute("SELECT text FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
+        return row["text"] if row else None
 
     def get_claim(self, claim_id: int) -> Claim | None:
         row = self._db.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
@@ -379,7 +440,8 @@ class ResearchStore:
 
     def topics(self, person_id: int) -> list[tuple[str, int]]:
         return [(r["topic"], r["n"]) for r in self._db.execute(
-            "SELECT topic, COUNT(*) n FROM claims WHERE person_id = ? AND sincere = 1"
+            "SELECT topic, COUNT(*) n FROM claims c JOIN documents d ON d.id = c.document_id"
+            f" WHERE c.person_id = ? AND sincere = 1 AND {ACTIVE_DOC}"
             " GROUP BY topic COLLATE NOCASE ORDER BY n DESC", (person_id,))]
 
     # ── search ───────────────────────────────────────────────────
@@ -388,10 +450,10 @@ class ResearchStore:
         fts = fts_or_query(query)
         if not fts:
             return []
-        rows = self._db.execute("""
+        rows = self._db.execute(f"""
             SELECT c.*, d.source, d.title, bm25(claims_fts) AS score
             FROM claims_fts f JOIN claims c ON c.id = f.rowid JOIN documents d ON d.id = c.document_id
-            WHERE claims_fts MATCH ? AND c.person_id = ?
+            WHERE claims_fts MATCH ? AND c.person_id = ? AND {ACTIVE_DOC}
             ORDER BY score LIMIT ?""", (fts, person_id, limit)).fetchall()
         return [Evidence("claim", r["id"], r["claim"], r["quote"], r["authorship"], r["url"],
                          r["published_at"], r["source"], r["title"], r["topic"], -r["score"])
@@ -401,11 +463,11 @@ class ResearchStore:
         fts = fts_or_query(query)
         if not fts:
             return []
-        rows = self._db.execute("""
+        rows = self._db.execute(f"""
             SELECT k.*, d.source, d.title, d.url AS d_url, d.published_at, d.authorship,
                    bm25(chunks_fts) AS score
             FROM chunks_fts f JOIN chunks k ON k.id = f.rowid JOIN documents d ON d.id = k.document_id
-            WHERE chunks_fts MATCH ? AND d.person_id = ?
+            WHERE chunks_fts MATCH ? AND d.person_id = ? AND {ACTIVE_DOC}
             ORDER BY score LIMIT ?""", (fts, person_id, limit)).fetchall()
         return [Evidence("chunk", r["id"], r["text"], r["text"], r["authorship"],
                          deep_link(r["d_url"], r["start_s"]), r["published_at"], r["source"],
@@ -424,7 +486,8 @@ class ResearchStore:
 
     def claim_vectors(self, person_id: int) -> tuple[list[int], np.ndarray]:
         rows = self._db.execute(
-            "SELECT id, embedding FROM claims WHERE person_id = ? AND embedding IS NOT NULL",
+            "SELECT c.id, c.embedding FROM claims c JOIN documents d ON d.id = c.document_id"
+            f" WHERE c.person_id = ? AND c.embedding IS NOT NULL AND {ACTIVE_DOC}",
             (person_id,)).fetchall()
         if not rows:
             return [], np.zeros((0, 0), dtype=np.float32)
@@ -494,6 +557,25 @@ def deep_link(url: str, start_s: float | None) -> str:
     return url
 
 
+def _legacy_match(account: Account, row) -> bool:
+    """Does a pre-provenance document row come from this account?"""
+    handle = account.handle.strip().lstrip("@").lower()
+    url = (row["url"] or "").lower()
+    if account.platform == "x" and row["source"] == "x":
+        return url.startswith((f"https://x.com/{handle}/status/",
+                               f"https://twitter.com/{handle}/status/"))
+    if account.platform == "wikipedia" and row["source"] == "wikipedia":
+        return row["external_id"].replace("_", " ").lower() == account.handle.replace("_", " ").lower()
+    if account.platform == "youtube" and row["source"] == "youtube":
+        meta = json.loads(row["meta"] or "{}")
+        return (meta.get("own_channel", True)
+                and str(meta.get("channel_id") or "").lower() == handle)
+    if account.platform == "website" and row["source"] == "web":
+        site = (account.url or account.handle).lower().rstrip("/")
+        return bool(site) and row["external_id"].lower().startswith(site)
+    return False
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -507,7 +589,7 @@ def _document(r) -> Document:
     return Document(id=r["id"], person_id=r["person_id"], source=r["source"], kind=r["kind"],
                     external_id=r["external_id"], text=r["text"], authorship=r["authorship"],
                     url=r["url"], title=r["title"], published_at=r["published_at"],
-                    meta=json.loads(r["meta"] or "{}"))
+                    meta=json.loads(r["meta"] or "{}"), account_id=r["account_id"])
 
 
 def _chunk(r) -> Chunk:
