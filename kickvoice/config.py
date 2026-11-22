@@ -105,12 +105,83 @@ class TranscribeConfig:
     keep_unattributed: bool = True
 
 
+@dataclass
+class LLMConfig:
+    """
+    Language model access for research and live debate help.
+
+    API keys are read from environment variables only (never stored in the
+    config file): ANTHROPIC_API_KEY, or OPENAI_API_KEY for "openai".
+    """
+    # "anthropic", or "openai" for any OpenAI-compatible server
+    # (OpenAI, Ollama at http://localhost:11434/v1, vLLM, LM Studio, …)
+    provider: str = "anthropic"
+    base_url: str | None = None          # None = the provider's default
+    api_key_env: str | None = None       # None = ANTHROPIC_API_KEY / OPENAI_API_KEY
+    # Thorough model for offline analysis; fast model for live suggestions.
+    analysis_model: str = "claude-sonnet-4-5"
+    live_model: str = "claude-haiku-4-5"
+    timeout_s: float = 60.0
+    # Optional embeddings (OpenAI-compatible /embeddings). Without them,
+    # retrieval uses SQLite full-text search only.
+    embedding_model: str | None = None
+    embedding_base_url: str | None = None
+    embedding_api_key_env: str | None = None
+
+
+@dataclass
+class ResearchConfig:
+    """Settings for `research` (collecting a public figure's public record)."""
+    # Identify yourself to the sites you fetch from (Wikimedia requires a UA
+    # with contact info: https://meta.wikimedia.org/wiki/User-Agent_policy).
+    user_agent: str = "kickvoice-research/0.1 (debate prep; set research.user_agent to add contact)"
+    # Minimum seconds between requests to the same host.
+    min_request_interval_s: float = 1.0
+    cache_ttl_hours: float = 24.0
+    # Per-run collection limits (keep first runs cheap; raise as needed).
+    max_videos: int = 25
+    max_posts: int = 1000
+    # Service endpoints (overridable for proxies / testing).
+    wikipedia_api: str = "https://en.wikipedia.org/w/api.php"
+    wikidata_api: str = "https://www.wikidata.org/w/api.php"
+    x_api: str = "https://api.twitter.com/2"
+    reddit_api: str = "https://oauth.reddit.com"
+    reddit_auth: str = "https://www.reddit.com/api/v1/access_token"
+    brave_search_api: str = "https://api.search.brave.com/res/v1/web/search"
+    # Credentials: environment variable *names* (values never stored).
+    x_bearer_token_env: str = "X_BEARER_TOKEN"
+    reddit_client_id_env: str = "REDDIT_CLIENT_ID"
+    reddit_client_secret_env: str = "REDDIT_CLIENT_SECRET"
+    brave_api_key_env: str = "BRAVE_API_KEY"
+    # Claim extraction: characters of source text per LLM call.
+    extraction_batch_chars: int = 12000
+
+
+@dataclass
+class DebateConfig:
+    """Settings for `debate` (live counter-argument suggestions)."""
+    # Shorter transcription blocks than `transcribe` → lower latency.
+    chunk_duration_s: float = 8.0
+    # Collect this many words of the opponent's speech before responding,
+    # unless they stop talking first.
+    min_point_words: int = 20
+    # Respond after this long without new lines from the opponent.
+    point_pause_s: float = 4.0
+    # Evidence passed to the model per point.
+    evidence_items: int = 12
+    # Skip stale points if the model falls behind (keep only the newest N).
+    max_queued_points: int = 2
+
+
 SECTIONS = {
     "audio": AudioConfig,
     "embedding": EmbeddingConfig,
     "identify": IdentifyConfig,
     "extract": ExtractConfig,
     "transcribe": TranscribeConfig,
+    "llm": LLMConfig,
+    "research": ResearchConfig,
+    "debate": DebateConfig,
 }
 
 
@@ -121,6 +192,9 @@ class Config:
     identify: IdentifyConfig = field(default_factory=IdentifyConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
     transcribe: TranscribeConfig = field(default_factory=TranscribeConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
+    debate: DebateConfig = field(default_factory=DebateConfig)
     data_dir: Path = DEFAULT_DATA_DIR
     # Defaults to <data_dir>/profiles when not set explicitly.
     profiles_dir: Path | None = None
@@ -139,6 +213,15 @@ class Config:
     def transcripts_db(self) -> Path:
         """SQLite database of speaker-attributed transcripts."""
         return self.data_dir / "transcripts.db"
+
+    @property
+    def research_db(self) -> Path:
+        """SQLite database of people, accounts, collected documents and claims."""
+        return self.data_dir / "research.db"
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.data_dir / "cache"
 
     @property
     def config_path(self) -> Path:

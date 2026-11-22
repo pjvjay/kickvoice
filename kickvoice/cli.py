@@ -7,6 +7,8 @@ kickvoice command line.
     kickvoice review
     kickvoice transcribe --stream https://kick.com/channel
     kickvoice transcripts show SESSION
+    kickvoice research add "Name" --x handle --voice PROFILE
+    kickvoice debate --stream https://kick.com/channel --opponent "Name"
     kickvoice profiles list
 
 Commands stay thin: they parse options, call a pipeline, and print the
@@ -21,6 +23,7 @@ from pathlib import Path
 import click
 
 from kickvoice import __version__, console
+from kickvoice.cli_research import debate, research
 from kickvoice.config import Config
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"], "max_content_width": 100}
@@ -657,6 +660,10 @@ def profiles_import(ctx, pack: Path | None, pack_opt: Path | None, on_conflict: 
         console.hint("   (use --on-conflict merge|overwrite to update existing profiles)")
     if not any((result.added, result.overwritten, result.merged, result.skipped)):
         console.warn("Pack contained no profiles.")
+
+
+cli.add_command(research)
+cli.add_command(debate)
 
 
 def main():

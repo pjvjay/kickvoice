@@ -143,3 +143,119 @@ class FakeRecognizer:
                 t = w_end
             prev_end = end
         return words
+
+
+# ── research fakes ───────────────────────────────────────────────
+
+import json as _json
+import threading as _threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+
+class FakeWeb:
+    """
+    A local HTTP server standing in for Wikipedia, X, Reddit, LLM APIs, etc.
+    Routes: {(METHOD, path): handler(req) -> (status, headers, body)} where
+    body may be a dict (sent as JSON) or str. Every request is recorded.
+    """
+
+    def __init__(self):
+        self.routes = {}
+        self.requests = []
+        web = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _handle(self, method):
+                parsed = urlparse(self.path)
+                length = int(self.headers.get("content-length") or 0)
+                body = self.rfile.read(length).decode() if length else ""
+                req = {"method": method, "path": parsed.path,
+                       "query": {k: v[0] for k, v in parse_qs(parsed.query).items()},
+                       "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body}
+                web.requests.append(req)
+                handler = web.routes.get((method, parsed.path))
+                if handler is None:
+                    status, headers, payload = 404, {}, {"error": "not found"}
+                else:
+                    status, headers, payload = handler(req)
+                data = _json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
+                ctype = "application/json" if isinstance(payload, (dict, list)) else "text/html"
+                self.send_response(status)
+                self.send_header("content-type", headers.pop("content-type", ctype))
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("content-length", str(len(data.encode())))
+                self.end_headers()
+                self.wfile.write(data.encode())
+
+            def do_GET(self):
+                self._handle("GET")
+
+            def do_POST(self):
+                self._handle("POST")
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        self._thread = _threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def route(self, method, path, handler=None, *, json=None, status=200, headers=None, text=None):
+        if handler is None:
+            payload = json if json is not None else (text or "")
+            handler = lambda req, p=payload: (status, dict(headers or {}), p)  # noqa: E731
+        self.routes[(method, path)] = handler
+
+    def hits(self, path):
+        return [r for r in self.requests if r["path"] == path]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def fake_web():
+    web = FakeWeb()
+    yield web
+    web.close()
+
+
+@pytest.fixture
+def rconfig(config, fake_web):
+    """Config whose research endpoints all point at the fake web server."""
+    r = config.research
+    r.min_request_interval_s = 0.0
+    r.wikipedia_api = f"{fake_web.url}/w/api.php"
+    r.wikidata_api = f"{fake_web.url}/wd/api.php"
+    r.x_api = f"{fake_web.url}/2"
+    r.reddit_api = f"{fake_web.url}/reddit"
+    r.reddit_auth = f"{fake_web.url}/reddit/api/v1/access_token"
+    r.brave_search_api = f"{fake_web.url}/brave"
+    return config
+
+
+class ScriptedLLM:
+    """LLM stand-in: replies come from a list, or from a function of the prompt."""
+
+    def __init__(self, replies=None, fn=None, model="fake-model"):
+        self.replies = list(replies or [])
+        self.fn = fn
+        self.model = model
+        self.calls = []
+
+    def complete(self, system, prompt, model, max_tokens=2000, temperature=0.2):
+        from kickvoice.research.llm import LLMReply
+
+        self.calls.append({"system": system, "prompt": prompt, "model": model})
+        if self.fn is not None:
+            text = self.fn(system, prompt)
+        else:
+            text = self.replies.pop(0)
+        if not isinstance(text, str):
+            text = _json.dumps(text)
+        return LLMReply(text=text, model=self.model, input_tokens=len(prompt) // 4,
+                        output_tokens=len(text) // 4)

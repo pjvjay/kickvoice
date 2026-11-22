@@ -269,6 +269,101 @@ were all labelled "probable", so analysis should use confident lines only.
 - Transcription needs the `faster-whisper` package (installed by setup). The
   Whisper model downloads on first use.
 
+### 8. Research an opponent, then get live counter-arguments
+
+Before a debate, kickvoice builds a cited record of what your opponent has
+said publicly. During the debate, it listens for their points and suggests
+replies grounded in that record.
+
+```bash
+# 1. Who are they? Link accounts (yours are trusted; discovered ones need your OK)
+./run.sh research add "Jane Pundit" --x JanePundit --youtube @janepundit --voice Jane
+./run.sh research discover "Jane Pundit" --x JanePundit     # official accounts via Wikidata
+
+# 2. Collect their public record
+./run.sh research collect "Jane Pundit"                     # Wikipedia, YouTube captions, X, Reddit, site
+./run.sh research collect "Jane Pundit" --voice --appearances 10   # + their words in other channels' videos
+
+# 3. Extract their claims (LLM), then prep
+./run.sh research analyze "Jane Pundit"
+./run.sh research brief "Jane Pundit" --out brief.md        # positions, quotes, contradictions, counters
+./run.sh research search "Jane Pundit" "rent control"
+
+# 4. Live
+./run.sh debate --stream "https://kick.com/somechannel" --opponent "Jane Pundit" --notes prep.md
+```
+
+```
+[12:04] Jane: rent control protects tenants and keeps housing stable for families
+┌─ 💡 Rent control keeps housing stable
+│ ⚠ CONTRADICTION: In 2021 she argued it shrinks supply.
+│    "Rent control reduces housing supply, build more homes" — 2021-03-01, their own words
+│    https://x.com/JanePundit/status/1366…
+│ ↩ 1. You said in 2021 that rent control shrinks supply — what changed?
+│ ↩ 2. Stable for current tenants, but what about the people who can't find a unit?
+│      └ your notes: SF 2019 study: supply of rent-controlled buildings fell 15%
+└─ 2.1s · claude-haiku-4-5
+```
+
+**What it collects.** Public content only, through official APIs and
+permitted access:
+
+| Source | How | Needs |
+|---|---|---|
+| Wikipedia / Wikidata | MediaWiki API | — |
+| YouTube (their channel) | captions via yt-dlp | — |
+| YouTube (appearances elsewhere), Twitch VODs | audio + voice-matched transcription (`--voice`) | their voice profile |
+| X | API v2 | `X_BEARER_TOKEN` (paid API tier) |
+| Reddit | OAuth app | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` |
+| Their website, web articles | page fetch (robots.txt respected); search via Brave | `BRAVE_API_KEY` for search |
+| Your stream transcripts | lines kickvoice attributed to their voice | their voice profile |
+| Anything else you have | `research import NAME file.jsonl` (or an X data export) | — |
+
+**What it doesn't do:**
+- **Discord.** There's no public API for a user's messages, and scraping
+  them breaks Discord's terms.
+- **Private or locked accounts, login walls, or alt-account unmasking.**
+  Accounts are linked only when you add them or they're publicly listed on
+  Wikidata, and you confirm each one.
+- **Personal life.** Claim extraction ignores family, health and location.
+
+**Accuracy rules** (quoting someone wrong in a live debate backfires):
+
+- **Authorship is recorded for everything.** Each item is marked as *their
+  own words*, *their voice (verified)*, *their channel (speaker
+  unverified)*, or *reported about them*. Contradictions can only be built
+  from their own words.
+- **Quotes are checked against the source.** A quote the model can't back
+  up with the source text is dropped. The stored quote is the source's
+  words, never the model's paraphrase.
+- **Jokes and sarcasm are flagged**, so they aren't thrown back as serious
+  positions.
+- **Live suggestions can only cite evidence they were given.** Citations to
+  anything else are discarded. A suggestion with no source is labelled
+  "reasoning, no source".
+- **Live lines are provisional.** The opponent's lines are detected by
+  voice as they're transcribed, so the confident/probable labels are
+  per-line. The whole-session check runs after the debate.
+
+**Models.** Set `ANTHROPIC_API_KEY` (default provider), or use any
+OpenAI-compatible server (including local models through Ollama):
+
+```json
+{"llm": {"provider": "openai", "base_url": "http://localhost:11434/v1",
+         "analysis_model": "qwen2.5:14b", "live_model": "qwen2.5:7b"}}
+```
+
+`analysis_model` is used for claim extraction and briefs, and
+`live_model` for the live suggestions, which should be fast. `research analyze` shows a
+token estimate and asks before spending. Optional `embedding_model`
+enables semantic search on top of the built-in full-text search.
+
+**Latency.** Debate mode transcribes in 8-second blocks
+(`debate.chunk_duration_s`), and a suggestion adds one fast-model call
+(typically 1–4s). If the model falls behind, stale points are skipped so
+suggestions stay current. Every suggestion is logged to
+`~/.kickvoice/debates/*.jsonl` for review afterwards.
+
 ## Make Targets
 
 ```
@@ -427,6 +522,7 @@ kickvoice/
 │   ├── __init__.py
 │   ├── __main__.py       # Enables `python -m kickvoice`
 │   ├── cli.py            # Click CLI — thin commands that call a pipeline
+│   ├── cli_research.py   # `research …` and `debate` commands
 │   ├── config.py         # Configuration dataclasses (defaults + JSON file)
 │   ├── console.py        # Output formatting (messages, tables, durations)
 │   ├── audio/            # Getting audio in, in one shape: 16kHz mono PCM
@@ -445,13 +541,24 @@ kickvoice/
 │   │   ├── attribution.py# Word → speaker alignment rules (pure functions)
 │   │   ├── refine.py     # Whole-session attribution (voice groups)
 │   │   └── store.py      # SQLite transcript store + full-text search
+│   ├── research/         # Opposition research + live counters
+│   │   ├── net.py        # Polite HTTP (rate limits, cache, robots.txt)
+│   │   ├── llm.py        # Anthropic / OpenAI-compatible clients, JSON validation
+│   │   ├── store.py      # SQLite: people, accounts, documents, claims (+ search)
+│   │   ├── sources/      # Wikipedia/Wikidata, YouTube, X, Reddit, web, local
+│   │   ├── extract.py    # Claim extraction with verbatim-quote verification
+│   │   ├── retrieve.py   # Hybrid retrieval (full-text + optional embeddings)
+│   │   ├── counter.py    # Live counter-argument engine (validated citations)
+│   │   └── brief.py      # Pre-debate brief
 │   └── pipelines/        # End-to-end flows
 │       ├── enroll.py     # Sources → profile
 │       ├── monitor.py    # Stream → who is speaking now
 │       ├── extract.py    # Stream → distinct voices → candidates
 │       ├── review.py     # Interactive approval (create / merge / skip)
 │       ├── session.py    # On-disk extraction sessions + review clips
-│       └── transcribe.py # Stream → speaker-attributed transcript
+│       ├── transcribe.py # Stream → speaker-attributed transcript
+│       ├── research.py   # Discover accounts, collect public record
+│       └── debate.py     # Live: opponent's points → counter-arguments
 ├── tests/                # pytest suite (no models/network needed)
 └── .venv/                # Created by setup.sh (gitignored)
 ```
