@@ -20,6 +20,16 @@ All notable changes to this project are documented here. The format follows
   thread was left blocked reading the terminal. Input is now read in short
   polls, so the process exits when the run ends (also after Ctrl+C while
   `extract-profiles` is waiting for an answer).
+- Fact-checking missed two kinds of misquote. Made-up quotes in single or
+  curly single quote marks (also `«…»` and `„…“`) were never checked, and
+  `...` could drop a word, so "are … fine" passed as a quote of "are not
+  fine". All quote marks are checked now, and a quote must be one unbroken
+  passage.
+
+### Changed
+- `...` no longer joins separate fragments inside a quote; such a reply is
+  rejected with an explanation. Quote one passage, or paraphrase without
+  quote marks.
 
 ## [0.2.0]
 

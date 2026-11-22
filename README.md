@@ -606,9 +606,23 @@ start_live_session ─▶ get_live_updates (long-poll, cursor) ─▶ "line" / "
 
 **Keeping replies accurate.** A chat message can't be corrected once it's
 sent, so `verify_message` checks every reply before it's offered:
-- **Quotes must be exact.** Quoted words must appear *exactly* in the
-  opponent's own first-hand statements. Only case and punctuation may
-  differ; `...` can join exact fragments. One changed word ("raise" → "abolish") fails.
+- **Quotes must be exact.** Anything in quote marks must appear *exactly*, as
+  one unbroken passage, in the opponent's own first-hand statements. Only case
+  and punctuation may differ. One changed word ("raise" → "abolish") fails.
+  - **No skipped words.** `...` can't stand in for words that were left out,
+    so "are … fine" is not a quote of "are not fine", and two sentences can't
+    be joined into one. A quote may still trail off or pick up mid-sentence
+    ("…housing supply has to grow"), because nothing inside it is missing.
+  - **Any quote marks count:** `"…"`, `“…”`, `'…'`, `‘…’`, `«…»`, `„…“`.
+    Single marks are also apostrophes, so "don't" and "Jane's" are not quotes,
+    but when it's unclear where a single-quoted passage ends (a plural
+    possessive such as "the streamers' rights" looks like a closing mark), the
+    longest reading is checked. That can reject a reply that was fine; the
+    message says to use double quote marks, which are never ambiguous.
+  - Quoted spans shorter than 8 characters (a single word in scare quotes) are
+    not treated as quotations. When the opponent has no research record,
+    replies with anything in quote marks are rejected, since nothing can be
+    checked.
 - **Third-party words can't be passed off as theirs.** Words only found in
   reports *about* them fail as quotes.
 - **Years need dated evidence.** A year in the reply must match evidence

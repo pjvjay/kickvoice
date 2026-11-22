@@ -14,12 +14,12 @@ opponent's arguments with chat-ready replies grounded in their record.
 
 from __future__ import annotations
 
-import re
 from collections import deque
 
 import anyio
 import click
 
+from kickvoice.agent.chat import has_quote_marks
 from kickvoice.agent.episode import EpisodeLimits
 from kickvoice.agent.goals.base import GoalAgent
 from kickvoice.agent.toolbox import LocalTool, LocalToolError, schema
@@ -31,9 +31,10 @@ server) while a live debate stream is running, helping a viewer reply in the str
 Rules you must follow:
 - Replies are short chat messages (plain text, one line, within the character limit), written
   as the viewer, addressed to the opponent. No markdown, hashtags, emojis or links.
-- Put quote marks ONLY around words copied exactly from the opponent's first-hand, sincere
-  evidence. "Reported about them" evidence is never their words. Mention a year only if the
-  evidence is from it. Never invent facts, statistics or quotes.
+- Put quote marks (of any kind) ONLY around words copied exactly from the opponent's
+  first-hand, sincere evidence, as one unbroken passage: never skip words with "...".
+  "Reported about them" evidence is never their words. Mention a year only if the evidence is
+  from it. Never invent facts, statistics or quotes.
 - Attack the argument, not the person.
 - Offer replies only through propose_replies; it fact-checks them. If some are rejected, fix
   them (or drop them) and propose again.
@@ -429,7 +430,7 @@ class MonitorAgent(GoalAgent):
         if not text:
             return {"ok": False, "issues": ["empty reply"], "text": text}
         if not self.research_subject:
-            if re.search(r"[\"“”]", text):
+            if has_quote_marks(text):
                 return {
                     "ok": False,
                     "text": text,

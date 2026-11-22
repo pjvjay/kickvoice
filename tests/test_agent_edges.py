@@ -200,9 +200,16 @@ def test_empty_reply_is_rejected(cfg):
 
 def test_without_a_record_quotes_are_rejected_and_plain_replies_flagged(cfg):
     result, outcome, lines = propose(
-        cfg, [{"text": 'you said "w220 forever"'}, {"text": "who pays for it?"}], opponent_has_record=False
+        cfg,
+        [
+            {"text": 'you said "w220 forever"'},
+            {"text": "you said 'w220 forever'"},
+            {"text": "who pays for it?"},
+        ],
+        opponent_has_record=False,
     )
-    assert "can't be checked" in result["rejected"][0]["issues"][0]
+    assert [r["text"] for r in result["rejected"]] == ['you said "w220 forever"', "you said 'w220 forever'"]
+    assert all("can't be checked" in r["issues"][0] for r in result["rejected"])
     assert outcome.report["replies"][0]["warnings"] == ["unchecked: no research record"]
 
 

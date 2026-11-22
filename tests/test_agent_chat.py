@@ -5,7 +5,13 @@ import subprocess
 import pytest
 
 from kickvoice.agent import chat
-from kickvoice.agent.chat import copy_to_clipboard, fit_to_chat, verify_message
+from kickvoice.agent.chat import (
+    copy_to_clipboard,
+    fit_to_chat,
+    has_quote_marks,
+    quoted_spans,
+    verify_message,
+)
 from kickvoice.research.store import ABOUT, SELF, Evidence
 
 
@@ -127,11 +133,180 @@ def test_exact_quote_ignoring_case_and_punctuation():
     assert verify_message('you said "i think we should raise the minimum wage"', [source], 300).ok
 
 
-def test_ellipsis_joins_exact_fragments_in_order():
+# ── quotes: one unbroken passage ─────────────────────────────────
+
+
+@pytest.mark.parametrize("gap", [" … ", " ... ", "…", " [...] ", " .. ", " — "])
+def test_an_ellipsis_cannot_drop_a_word(gap):
+    """Regression: "are … fine" was accepted as a quote of "are not fine"."""
+    source = ev("Sponsored streams are not fine for streamers who hide them.")
+    v = verify_message(f'you said "sponsored streams are{gap}fine for streamers"', [source], 300, "Jane")
+    assert not v.ok and not v.verified_quotes
+    assert "sponsored streams are" in v.issues[0]
+
+
+def test_skipped_words_get_their_own_explanation():
+    source = ev("Sponsored streams are not fine for streamers who hide them.")
+    v = verify_message('you said "sponsored streams are … fine for streamers"', [source], 300, "Jane")
+    assert "one unbroken passage" in v.issues[0] and "not found" not in v.issues[0]
+    made_up = verify_message('you said "sponsored streams are great"', [source], 300, "Jane")
+    assert "not found in their record" in made_up.issues[0]
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "we should raise the minimum wage ... housing supply has to grow",  # two sentences spliced
+        "housing supply has to grow ... we should raise the minimum wage",  # and out of order
+        "we should raise ... minimum wage",  # one word dropped
+    ],
+)
+def test_an_ellipsis_cannot_join_separate_parts(quote):
     source = ev("We should raise the minimum wage. Also, housing supply has to grow fast.")
-    assert verify_message(
-        'you said "we should raise the minimum wage ... housing supply has to grow"', [source], 300
-    ).ok
-    assert not verify_message(
-        'you said "housing supply has to grow ... we should raise the minimum wage"', [source], 300
-    ).ok
+    assert not verify_message(f'you said "{quote}"', [source], 300).ok
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "we should raise the minimum wage…",  # trails off
+        "... housing supply has to grow fast",  # picks up mid-way
+        "…we should raise the minimum wage...",
+        "the minimum wage. Also, housing supply",  # runs across the sentence break, nothing skipped
+    ],
+)
+def test_an_ellipsis_around_an_unbroken_passage_is_fine(quote):
+    source = ev("We should raise the minimum wage. Also, housing supply has to grow fast.")
+    v = verify_message(f'you said "{quote}"', [source], 300)
+    assert v.ok, v.issues
+
+
+def test_an_ellipsis_they_wrote_themselves_is_just_punctuation():
+    source = ev("Well... I think rent control works, actually.")
+    v = verify_message('you said "well... I think rent control works"', [source], 300)
+    assert v.ok and v.verified_quotes[0]["quote"] == "Well... I think rent control works"
+
+
+# ── quotes: every kind of quote mark ─────────────────────────────
+
+MARKS = [
+    ('"', '"'),
+    ("“", "”"),
+    ("'", "'"),
+    ("‘", "’"),
+    ("«", "»"),
+    ("„", "“"),
+    ("‚", "‘"),
+    ("’", "’"),
+    ("＂", "＂"),
+]
+
+
+@pytest.mark.parametrize("opening,closing", MARKS)
+def test_made_up_quotes_are_caught_in_any_quote_marks(opening, closing):
+    """Regression: only double quote marks were looked at, so 'single-quoted' inventions passed."""
+    source = ev("Rent control reduces housing supply.")
+    v = verify_message(f"you said {opening}rent control is always evil{closing} lol", [source], 300, "Jane")
+    assert not v.ok and "not found in their record" in v.issues[0]
+
+
+@pytest.mark.parametrize("opening,closing", MARKS)
+def test_real_quotes_pass_in_any_quote_marks(opening, closing):
+    source = ev("Rent control reduces housing supply. Build more.")
+    v = verify_message(f"you said {opening}rent control reduces housing supply{closing} lol", [source], 300)
+    assert v.ok, v.issues
+    assert [q["quote"] for q in v.verified_quotes] == ["Rent control reduces housing supply"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "don't say it's fine, that's not what Jane's record says",
+        "the streamers' rights aren't the point, y'all",
+        "back in '21 that wasn’t their view",
+        "rock 'n' roll isn’t dead",
+    ],
+)
+def test_apostrophes_are_not_quote_marks(message):
+    v = verify_message(message, [ev("Rent control reduces housing supply.")], 300)
+    assert v.ok and not v.verified_quotes, v.issues
+    assert quoted_spans(message) == []
+
+
+def test_single_quoted_quotes_may_contain_apostrophes():
+    source = ev("Honestly I don't think it's fine for anyone.")
+    v = verify_message("you said 'I don't think it's fine' and now this?", [source], 300)
+    assert v.ok and v.verified_quotes[0]["quote"] == "I don't think it's fine"
+    assert not verify_message("you said 'I do think it's fine' and now this?", [source], 300).ok
+
+
+def test_a_possessive_inside_single_quotes_does_not_end_the_check_early():
+    """The apostrophe in "streamers'" looks like a closing mark; the whole quote still has to match."""
+    source = ev("I support the streamers' right to organise.")
+    exact = verify_message("you said 'I support the streamers' right to organise'", [source], 300)
+    assert exact.ok and exact.verified_quotes[0]["quote"] == "I support the streamers' right to organise"
+    changed = verify_message("you said 'I support the streamers' right to strike'", [source], 300)
+    assert not changed.ok  # "I support the streamers" alone would have matched
+
+
+def test_unclear_single_quotes_fail_safe_and_say_how_to_fix_it():
+    source = ev("Rent control reduces housing supply.")
+    unclear = "you said 'rent control reduces housing supply' but the streamers' fans disagree"
+    v = verify_message(unclear, [source], 300)
+    assert not v.ok and "double quote marks" in v.issues[0]
+    assert verify_message(unclear.replace("'rent", '"rent').replace("supply'", 'supply"'), [source], 300).ok
+    # An apostrophe pair that only looks like a quote is rejected too, rather than passed unchecked.
+    looks_quoted = verify_message("back in '21 that wasn't the streamers' view", [source], 300)
+    assert not looks_quoted.ok and "double quote marks" in looks_quoted.issues[0]
+
+
+def test_quote_marks_inside_a_quote_belong_to_it():
+    source = ev("I don't think 'free markets' work for housing.")
+    v = verify_message("you said \"I don't think 'free markets' work\" yesterday", [source], 300)
+    assert v.ok and len(v.verified_quotes) == 1, v.issues
+    nested = verify_message("you said 'I don't think \"free markets\" work for housing'", [source], 300)
+    assert nested.ok and len(nested.verified_quotes) == 1, nested.issues
+
+
+def test_short_quoted_words_do_not_shift_the_pairing():
+    source = ev("Rent control reduces housing supply.")
+    v = verify_message('"lol" you said "rent control reduces housing supply" though', [source], 300)
+    assert v.ok and len(v.verified_quotes) == 1, v.issues
+    assert [s.text for s in quoted_spans('"no" and then "rent control is evil" and \'ok\'')] == [
+        "rent control is evil"
+    ]
+
+
+def test_two_quotes_are_checked_separately():
+    source = ev("Rent control reduces housing supply. Build more homes instead.")
+    both = "you said 'rent control reduces housing supply' and 'build more homes instead'"
+    assert len(verify_message(both, [source], 300).verified_quotes) == 2
+    one_wrong = "you said 'rent control reduces housing supply' and 'build fewer homes instead'"
+    v = verify_message(one_wrong, [source], 300)
+    assert not v.ok and len(v.verified_quotes) == 1 and "build fewer homes" in v.issues[0]
+
+
+def test_third_party_words_in_single_quotes_are_still_third_party():
+    v = verify_message(
+        "you said 'she has opposed rent control'",
+        [ev("She has opposed rent control.", authorship=ABOUT)],
+        300,
+        "Jane",
+    )
+    assert not v.ok and "third-party" in v.issues[0]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("who pays for it?", False),
+        ("that's not what Jane's fans' polls say", False),
+        ('you said "no"', True),
+        ("you said 'no'", True),
+        ("you said ‘never’ though", True),
+        ("«jamais», you said", True),
+        ('an unclosed " mark', True),
+    ],
+)
+def test_has_quote_marks(text, expected):
+    assert has_quote_marks(text) is expected

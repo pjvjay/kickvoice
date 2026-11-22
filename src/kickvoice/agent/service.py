@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from kickvoice.agent import live
-from kickvoice.agent.chat import copy_to_clipboard, fit_to_chat, verify_message
+from kickvoice.agent.chat import copy_to_clipboard, fit_to_chat, quoted_spans, verify_message
 from kickvoice.agent.jobs import JobRunner
 from kickvoice.agent.live import LiveSession, LiveSessions, Opponent
 from kickvoice.config import Config
@@ -643,15 +643,13 @@ class AgentService:
         self, opponent: str, message: str, cited_refs: list[str] | None = None, max_chars: int | None = None
     ) -> dict:
         """Fact-check a reply (quotes, years, attributions, length) against the opponent's record."""
-        from kickvoice.agent.chat import _QUOTED
-
         max_chars = max_chars or self.config.agent.chat_max_chars
         with self._research() as store:
             person = self._person(store, opponent)
             evidence = store.evidence_by_refs(person.id, cited_refs or [])
-            for quote in _QUOTED.findall(message):  # also look for uncited quotes
-                evidence += store.search_claims(person.id, quote, 5)
-                evidence += store.search_chunks(person.id, quote, 5)
+            for span in quoted_spans(message):  # also look for uncited quotes
+                evidence += store.search_claims(person.id, span.text, 5)
+                evidence += store.search_chunks(person.id, span.text, 5)
         return verify_message(message, evidence, max_chars, opponent=person.name).to_dict()
 
     def format_for_chat(self, text: str, max_chars: int | None = None) -> dict:

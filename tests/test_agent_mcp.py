@@ -197,6 +197,10 @@ def test_verify_message_via_service_uses_cited_and_searched_evidence(service, rc
     assert ok["ok"], ok
     uncited = service.verify_message("Jane Pundit", 'you said "the minimum wage should track inflation"')
     assert uncited["ok"]  # found by searching the record
+    single = service.verify_message("Jane Pundit", "you said 'the minimum wage should track inflation'")
+    assert single["ok"] and single["verified_quotes"]  # any quote marks: searched and checked the same way
+    made_up = service.verify_message("Jane Pundit", "you said ‘the minimum wage should be abolished’")
+    assert not made_up["ok"] and "not found" in made_up["issues"][0]
     wrong = service.verify_message("Jane Pundit", 'you said "abolish the minimum wage"')
     assert not wrong["ok"]
     assert service.copy_to_clipboard("hi") == {"copied": True, "detail": "fake", "length": 2}

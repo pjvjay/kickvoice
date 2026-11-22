@@ -4,8 +4,9 @@ Chat-ready replies: formatting, fact-checking, clipboard.
 A reply goes into a live chat where you can't edit or add sources, so before
 one is offered it must (1) read like a normal chat message and fit the
 length limit, and (2) not put words in the opponent's mouth: every quote in
-it must be verbatim from their first-hand record, and every year it mentions
-must be backed by dated evidence.
+it must be verbatim from their first-hand record (one unbroken passage, in
+whatever kind of quote marks), and every year it mentions must be backed by
+dated evidence.
 """
 
 from __future__ import annotations
@@ -21,7 +22,12 @@ from kickvoice.research.store import FIRST_HAND, Evidence
 
 _MARKDOWN = re.compile(r"(\*\*|__|`|^#+\s*|^\s*[-*]\s+)", re.M)
 _LABEL = re.compile(r"^\s*(counter|reply|response|chat|message)\s*\d*\s*[:\-–]\s*", re.I)
-_QUOTED = re.compile(r"[\"“”]([^\"“”]{8,})[\"“”]")
+# Quote marks that are never apostrophes: any of them opens or closes a quote.
+_DOUBLE_MARKS = frozenset('"“”„‟«»＂')
+# Single marks double as apostrophes, so their position decides (see quoted_spans).
+_SINGLE_MARKS = frozenset("'‘’‚‛＇")
+MIN_QUOTE_CHARS = 8  # shorter spans are scare quotes or single words, not quotations
+_ELLIPSIS = re.compile(r"\.{2,}|…")
 _YEAR = re.compile(r"\b(19[89]\d|20\d\d)\b")
 _URL = re.compile(r"https?://\S+")
 _ATTRIBUTION = re.compile(
@@ -77,8 +83,8 @@ def verify_message(
     issues, warnings, verified = [], [], []
     first_hand = [e for e in evidence if e.authorship in FIRST_HAND]
 
-    for quote in _QUOTED.findall(message):
-        match = None
+    for span in quoted_spans(message):
+        quote, match = span.text, None
         for ev in first_hand:
             found = _quoted_in(quote, ev.quote) or (
                 _quoted_in(quote, ev.text) if ev.text != ev.quote else None
@@ -88,14 +94,18 @@ def verify_message(
                 break
         if match is None:
             reported = any(_quoted_in(quote, e.quote) for e in evidence if e.authorship not in FIRST_HAND)
-            issues.append(
-                f'"{quote[:60]}" isn\'t something {opponent} said in their own words'
-                + (
-                    " (it's from a third-party source — don't present it as their quote)"
-                    if reported
-                    else " — not found in their record; paraphrase without quote marks or drop it"
+            if reported:
+                why = " (it's from a third-party source — don't present it as their quote)"
+            elif _ELLIPSIS.search(quote.strip(" .…")):
+                why = (
+                    ' — a quote can\'t skip words with "…": it has to be one unbroken passage '
+                    "from their record; quote a single part or paraphrase without quote marks"
                 )
-            )
+            else:
+                why = " — not found in their record; paraphrase without quote marks or drop it"
+            if span.single and not reported:  # an apostrophe may have been read as a quote mark
+                why += " (if the quote starts or ends elsewhere, put it in double quote marks)"
+            issues.append(f'"{quote[:60]}" isn\'t something {opponent} said in their own words' + why)
         else:
             ev, found = match
             verified.append({"quote": found, "ref": ev.ref, "date": ev.published_at, "url": ev.url})
@@ -127,22 +137,87 @@ def verify_message(
 
 def _quoted_in(quote: str, source: str) -> str | None:
     """
-    Exact (case/punctuation-insensitive) match — no word changes. An
-    ellipsis may join fragments that each appear exactly, in order.
+    The source's own words for `quote`, if its words appear there as one
+    unbroken run (case and punctuation aside), else None.
+
+    An ellipsis is just punctuation here, so it can't stand in for words
+    that were left out: "are … fine" is not a quote of "are not fine", and
+    two sentences can't be spliced into one.
     """
-    fragments = [f.strip() for f in re.split(r"\.\.\.|…", quote) if f.strip()]
-    if len(fragments) <= 1:
-        return find_quote(quote, source, exact=True)
-    found, position = [], 0
-    for fragment in fragments:
-        if len(fragment.split()) < 3:
-            return None  # "…so…" style fragments can't be verified
-        hit = find_quote(fragment, source[position:], exact=True)
-        if hit is None:
-            return None
-        position = source.index(hit, position) + len(hit)
-        found.append(hit)
-    return " … ".join(found)
+    return find_quote(quote, source, exact=True)
+
+
+@dataclass(frozen=True)
+class QuotedSpan:
+    text: str
+    single: bool = False  # in single quote marks, which can be confused with apostrophes
+
+
+def quoted_spans(message: str, min_chars: int = MIN_QUOTE_CHARS) -> list[QuotedSpan]:
+    """
+    Every passage `message` puts in quote marks, at least `min_chars` long.
+
+    Double marks (straight, curly, low, guillemets) pair up left to right.
+    Single marks are also apostrophes, so one only opens a quote when it
+    doesn't follow a letter or digit ("don't", "Jane's"), and only closes one
+    when it doesn't run into a word. A plural possessive ("the streamers'
+    rights") looks exactly like a closing mark; when a quote could end in
+    several places, the longest reading is the one returned, so a misquote
+    can't hide behind the first apostrophe. Marks inside a span belong to it.
+
+    This errs on the side of seeing a quote: "back in '21 … the streamers'
+    view" reads as one. Such a reply is rejected with a hint, never passed
+    unchecked.
+    """
+    spans, i = [], 0
+    while i < len(message):
+        end, single = None, False
+        if message[i] in _DOUBLE_MARKS:
+            end = next((k for k in range(i + 1, len(message)) if message[k] in _DOUBLE_MARKS), None)
+        elif _opens_single(message, i):
+            ends = _single_ends(message, i)
+            end, single = (ends[-1] if ends else None), True
+        if end is None:
+            i += 1
+            continue
+        if end - i - 1 >= min_chars:
+            spans.append(QuotedSpan(message[i + 1 : end], single))
+        i = end + 1
+    return spans
+
+
+def has_quote_marks(text: str) -> bool:
+    """True if `text` puts anything at all in quote marks."""
+    return any(ch in _DOUBLE_MARKS for ch in text) or bool(quoted_spans(text, min_chars=1))
+
+
+def _is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _opens_single(message: str, i: int) -> bool:
+    if message[i] not in _SINGLE_MARKS:
+        return False
+    before = message[i - 1] if i else " "
+    after = message[i + 1] if i + 1 < len(message) else " "
+    return not _is_word_char(before) and not after.isspace()
+
+
+def _closes_single(message: str, k: int) -> bool:
+    if message[k] not in _SINGLE_MARKS or message[k - 1].isspace():
+        return False
+    return k + 1 == len(message) or not _is_word_char(message[k + 1])
+
+
+def _single_ends(message: str, start: int) -> list[int]:
+    """Where the single-quoted span opened at `start` could end, up to the next opening mark."""
+    ends = []
+    for k in range(start + 2, len(message)):
+        if _closes_single(message, k):
+            ends.append(k)
+        elif _opens_single(message, k):
+            break
+    return ends
 
 
 def copy_to_clipboard(text: str) -> tuple[bool, str]:

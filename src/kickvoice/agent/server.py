@@ -45,7 +45,8 @@ research_link_wikidata / research_add_subject → research_collect → research_
 These run as background jobs; check job_status. Excerpts are searchable as soon as collected.
 
 Accuracy rules (quoting someone wrong in public backfires):
-- Put quote marks only around words that appear verbatim in first_hand, sincere evidence.
+- Put quote marks (of any kind) only around words that appear verbatim, as one unbroken
+  passage, in first_hand, sincere evidence. Never skip words with "...".
 - "reported about them" evidence is what others say — never present it as their words.
 - Mention a date/year only if the cited evidence is from it. Don't invent statistics.
 - Attack the argument, not the person."""
