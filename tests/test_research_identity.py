@@ -5,6 +5,7 @@ Regression: `discover "Destiny" --x <handle> -y` where the handle wasn't on
 Wikidata fell back to a name search, took the first hit — the 2014 video
 game — and confirmed its accounts (@DestinyTheGame) for the debater.
 """
+
 import json
 import sqlite3
 
@@ -13,7 +14,12 @@ import pytest
 from kickvoice.pipelines.research import discover
 from kickvoice.research.net import Fetcher
 from kickvoice.research.store import (
-    CONFIRMED, REJECTED, Chunk, Claim, Document, ResearchStore,
+    CONFIRMED,
+    REJECTED,
+    Chunk,
+    Claim,
+    Document,
+    ResearchStore,
 )
 
 
@@ -21,17 +27,27 @@ def entity(label, description, instance_of, accounts=None, enwiki=None):
     claims = {"P31": [{"mainsnak": {"datavalue": {"value": {"id": q}}}} for q in instance_of]}
     for prop, value in (accounts or {}).items():
         claims[prop] = [{"rank": "normal", "mainsnak": {"datavalue": {"value": value}}}]
-    e = {"labels": {"en": {"value": label}}, "descriptions": {"en": {"value": description}},
-         "claims": claims, "sitelinks": {}}
+    e = {
+        "labels": {"en": {"value": label}},
+        "descriptions": {"en": {"value": description}},
+        "claims": claims,
+        "sitelinks": {},
+    }
     if enwiki:
         e["sitelinks"]["enwiki"] = {"title": enwiki}
     return e
 
 
-GAME = entity("Destiny", "2014 video game", ["Q7889"], {"P2002": "DestinyTheGame"},
-              enwiki="Destiny (video game)")
-STREAMER = entity("Steven Bonnell", "American streamer and political commentator", ["Q5"],
-                  {"P2002": "TheOmniLiberal", "P2397": "UC" + "d" * 22}, enwiki="Destiny (streamer)")
+GAME = entity(
+    "Destiny", "2014 video game", ["Q7889"], {"P2002": "DestinyTheGame"}, enwiki="Destiny (video game)"
+)
+STREAMER = entity(
+    "Steven Bonnell",
+    "American streamer and political commentator",
+    ["Q5"],
+    {"P2002": "TheOmniLiberal", "P2397": "UC" + "d" * 22},
+    enwiki="Destiny (streamer)",
+)
 COMPANY = entity("Bungie", "American video game developer", ["Q210167"], {"P2002": "Bungie"})
 
 WIKIDATA = {"Q1": GAME, "Q2": STREAMER, "Q3": COMPANY}
@@ -40,21 +56,30 @@ WIKIDATA = {"Q1": GAME, "Q2": STREAMER, "Q3": COMPANY}
 @pytest.fixture
 def wikidata(fake_web):
     """Fake Wikidata: which records list which handles, and a name search."""
-    state = {"name_hits": ["Q1", "Q2"], "handles": {"P2002=DestinyTheGame": ["Q1"],
-                                                    "P2002=TheOmniLiberal": ["Q2"]}}
+    state = {
+        "name_hits": ["Q1", "Q2"],
+        "handles": {"P2002=DestinyTheGame": ["Q1"], "P2002=TheOmniLiberal": ["Q2"]},
+    }
 
     def api(req):
         q = req["query"]
         if q.get("action") == "wbsearchentities":
-            return 200, {}, {"search": [{"id": i, "label": WIKIDATA[i]["labels"]["en"]["value"]}
-                                        for i in state["name_hits"]]}
+            return (
+                200,
+                {},
+                {
+                    "search": [
+                        {"id": i, "label": WIKIDATA[i]["labels"]["en"]["value"]} for i in state["name_hits"]
+                    ]
+                },
+            )
         if q.get("list") == "search":
             key = q["srsearch"].removeprefix("haswbstatement:")
             return 200, {}, {"query": {"search": [{"title": t} for t in state["handles"].get(key, [])]}}
         if q.get("action") == "wbgetentities":
-            return 200, {}, {"entities": {i: WIKIDATA.get(i, {"missing": ""})
-                                          for i in q["ids"].split("|")}}
+            return 200, {}, {"entities": {i: WIKIDATA.get(i, {"missing": ""}) for i in q["ids"].split("|")}}
         return 400, {}, {}
+
     fake_web.route("GET", "/wd/api.php", api)
     return state
 
@@ -69,9 +94,10 @@ def person_state(rconfig, name="Destiny"):
 
 # ── the reported bug ─────────────────────────────────────────────
 
+
 def test_unmatched_handle_never_falls_back_to_first_name_hit(run, rconfig, wikidata):
     """Exactly the report: handle not on Wikidata, -y, name search → the game."""
-    wikidata["name_hits"] = ["Q1"]                 # only the video game matches the name
+    wikidata["name_hits"] = ["Q1"]  # only the video game matches the name
     out = run("research", "discover", "Destiny", "--x", "not_on_wikidata", "-y").output
     assert "No Wikidata record lists x:not_on_wikidata" in out
     assert 'Skipped Q1 "Destiny" — 2014 video game (not a person)' in out
@@ -82,12 +108,11 @@ def test_unmatched_handle_never_falls_back_to_first_name_hit(run, rconfig, wikid
 
 def test_yes_never_links_on_a_name_match(run, rconfig, wikidata):
     """Even when the name search finds a real person, -y must not pick for you."""
-    result = run("research", "discover", "Destiny", "--x", "not_on_wikidata", "-y",
-                 expect_ok=False)
+    result = run("research", "discover", "Destiny", "--x", "not_on_wikidata", "-y", expect_ok=False)
     assert result.exit_code == 1
     assert "name search alone isn't enough" in result.output
-    assert "--wikidata Q2" in result.output                    # tells you how to be exact
-    assert "Skipped Q1" in result.output                       # the game isn't even offered
+    assert "--wikidata Q2" in result.output  # tells you how to be exact
+    assert "Skipped Q1" in result.output  # the game isn't even offered
     assert "[1] Steven Bonnell (Q2)" in result.output and "name match only" in result.output
     assert person_state(rconfig)[1] == []
 
@@ -111,12 +136,13 @@ def test_exact_handle_of_a_person_links_with_yes(run, rconfig, wikidata):
 def test_explicit_wikidata_id(run, rconfig, wikidata):
     run("research", "discover", "Destiny", "--wikidata", "q2", "-y")
     assert person_state(rconfig)[0].wikidata_id == "Q2"
-    result = run("research", "discover", "Destiny", "--wikidata", "Q3", "-y")   # a company
+    result = run("research", "discover", "Destiny", "--wikidata", "Q3", "-y")  # a company
     assert "(not a person)" in result.output and person_state(rconfig)[0].wikidata_id == "Q2"
 
 
 def test_interactive_choice_from_name_search(run, rconfig, wikidata, monkeypatch):
     import kickvoice.cli_research as cr
+
     monkeypatch.setattr(cr, "_interactive", lambda: True)
     # pick [1] (the only person), accept x, reject youtube, accept wikipedia
     out = run("research", "discover", "Destiny", input="1\ny\ny\nn\n").output
@@ -128,10 +154,13 @@ def test_interactive_choice_from_name_search(run, rconfig, wikidata, monkeypatch
 
 def test_interactive_can_decline_everything(run, rconfig, wikidata, monkeypatch):
     import kickvoice.cli_research as cr
+
     monkeypatch.setattr(cr, "_interactive", lambda: True)
     assert "Nothing linked" in run("research", "discover", "Destiny", input="0\n").output
-    assert "Nothing linked" in run("research", "discover", "Destiny", "--x", "TheOmniLiberal",
-                                   input="n\n").output
+    assert (
+        "Nothing linked"
+        in run("research", "discover", "Destiny", "--x", "TheOmniLiberal", input="n\n").output
+    )
     assert person_state(rconfig)[1] == []
 
 
@@ -144,6 +173,7 @@ def test_discover_result_fields(rconfig, wikidata):
 
 # ── cleaning up after a wrong link ───────────────────────────────
 
+
 @pytest.fixture
 def polluted(rconfig):
     """The state the bug left behind: linked to the game, its accounts confirmed,
@@ -152,25 +182,51 @@ def polluted(rconfig):
         p = store.add_person("Destiny", description="2014 video game")
         p.wikidata_id = "Q1"
         store.update_person(p)
-        store.add_account(p.id, "x", "DestinyTheGame", "https://x.com/DestinyTheGame",
-                          status=CONFIRMED, found_via="wikidata Q1")
-        store.add_account(p.id, "wikipedia", "Destiny (video game)", status=CONFIRMED,
-                          found_via="wikidata Q1")
-        mine = store.add_account(p.id, "x", "TheOmniLiberal", status=CONFIRMED,
-                                 found_via="added by you")
+        store.add_account(
+            p.id,
+            "x",
+            "DestinyTheGame",
+            "https://x.com/DestinyTheGame",
+            status=CONFIRMED,
+            found_via="wikidata Q1",
+        )
+        store.add_account(
+            p.id, "wikipedia", "Destiny (video game)", status=CONFIRMED, found_via="wikidata Q1"
+        )
+        mine = store.add_account(p.id, "x", "TheOmniLiberal", status=CONFIRMED, found_via="added by you")
         docs = [
-            Document(p.id, "x", "post", "g1", "New raid drops Tuesday, Guardians!", "self",
-                     url="https://x.com/DestinyTheGame/status/g1"),
-            Document(p.id, "wikipedia", "article", "Destiny (video game)",
-                     "Destiny is a 2014 online first-person shooter.", "about"),
-            Document(p.id, "x", "post", "s1", "Rent control reduces housing supply.", "self",
-                     url="https://x.com/TheOmniLiberal/status/s1", account_id=mine.id),
+            Document(
+                p.id,
+                "x",
+                "post",
+                "g1",
+                "New raid drops Tuesday, Guardians!",
+                "self",
+                url="https://x.com/DestinyTheGame/status/g1",
+            ),
+            Document(
+                p.id,
+                "wikipedia",
+                "article",
+                "Destiny (video game)",
+                "Destiny is a 2014 online first-person shooter.",
+                "about",
+            ),
+            Document(
+                p.id,
+                "x",
+                "post",
+                "s1",
+                "Rent control reduces housing supply.",
+                "self",
+                url="https://x.com/TheOmniLiberal/status/s1",
+                account_id=mine.id,
+            ),
         ]
         for d in docs:
             store.upsert_document(d, [Chunk(d.text)])
         for chunk, doc in store.chunks_to_analyze(p.id):
-            store.add_claims([Claim(p.id, doc.id, chunk.id, "topic " + doc.external_id,
-                                    "claim", doc.text)])
+            store.add_claims([Claim(p.id, doc.id, chunk.id, "topic " + doc.external_id, "claim", doc.text)])
     return rconfig
 
 
@@ -183,7 +239,7 @@ def test_relink_rejects_old_records_accounts_and_fixes_description(run, polluted
     status = {(p, h): st for p, h, st in accounts}
     assert status[("x", "DestinyTheGame")] == REJECTED
     assert status[("wikipedia", "Destiny (video game)")] == REJECTED
-    assert status[("x", "TheOmniLiberal")] == CONFIRMED          # yours — untouched
+    assert status[("x", "TheOmniLiberal")] == CONFIRMED  # yours — untouched
 
 
 def test_purge_removes_everything_from_rejected_accounts(run, polluted, wikidata):
@@ -214,10 +270,9 @@ def test_rejecting_an_account_takes_effect_before_purge(rconfig):
     with ResearchStore(rconfig.research_db) as store:
         p = store.add_person("Jane")
         acct = store.add_account(p.id, "x", "wrong", status=CONFIRMED)
-        d = Document(p.id, "x", "post", "1", "raid night tonight guardians", "self",
-                     account_id=acct.id)
+        d = Document(p.id, "x", "post", "1", "raid night tonight guardians", "self", account_id=acct.id)
         store.upsert_document(d, [Chunk(d.text)])
-        (chunk, _), = store.chunks_to_analyze(p.id)
+        ((chunk, _),) = store.chunks_to_analyze(p.id)
         store.add_claims([Claim(p.id, d.id, chunk.id, "raids", "likes raids", d.text)])
         assert store.search_claims(p.id, "raid") and store.topics(p.id)
         store.set_account_status(acct.id, REJECTED)
@@ -268,8 +323,7 @@ def test_legacy_matching_rules():
     from kickvoice.research.store import Account, _legacy_match
 
     def row(source, external_id="", url="", meta=None):
-        return {"source": source, "external_id": external_id, "url": url,
-                "meta": json.dumps(meta or {})}
+        return {"source": source, "external_id": external_id, "url": url, "meta": json.dumps(meta or {})}
 
     x = Account(1, 1, "x", "@DestinyTheGame")
     assert _legacy_match(x, row("x", url="https://x.com/destinythegame/status/9"))

@@ -1,4 +1,4 @@
-.PHONY: setup clean reset test enroll-test monitor-test profiles help
+.PHONY: setup venv install install-gpu download-models test coverage lint format build check-dist verify profiles clean reset help
 
 VENV      := .venv
 PYTHON    := $(VENV)/bin/python
@@ -37,18 +37,18 @@ install: venv ## Install kickvoice into venv (auto-detects platform)
 	else \
 		$(PIP) install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet; \
 	fi
-	@$(PIP) install -e ".[youtube,transcribe,agent,dev]" --quiet
+	@$(PIP) install -e ".[all,dev]" --quiet
 	@$(PIP) install streamlink --quiet
 	@echo "✅ kickvoice installed"
 
 install-gpu: venv ## Install kickvoice with CUDA GPU support (Linux only)
 	@$(PIP) install torch torchaudio --quiet
-	@$(PIP) install -e ".[youtube,transcribe,agent,dev]" --quiet
+	@$(PIP) install -e ".[all,dev]" --quiet
 	@$(PIP) install streamlink --quiet
 	@echo "✅ kickvoice installed (GPU)"
 
 download-models: ## Pre-download ML models (~80MB)
-	@$(PYTHON) -c "\
+	@$(PYTHON) -c "if True: \
 		from speechbrain.inference.speaker import EncoderClassifier; \
 		import os; \
 		EncoderClassifier.from_hparams( \
@@ -57,22 +57,40 @@ download-models: ## Pre-download ML models (~80MB)
 			run_opts={'device': 'cpu'}, \
 		); \
 		print('✅ ECAPA-TDNN ready')"
-	@$(PYTHON) -c "\
+	@$(PYTHON) -c "if True: \
 		from silero_vad import load_silero_vad; \
 		load_silero_vad(); \
 		print('✅ Silero VAD ready')"
 
-test: ## Run tests
-	@$(PYTHON) -m pytest tests/ -v
+test: ## Run the test suite
+	@$(PYTHON) -m pytest
+
+coverage: ## Run tests with coverage (fails under 90%)
+	@$(PYTHON) -m pytest --cov --cov-report=term-missing --cov-report=html
+	@echo "HTML report: htmlcov/index.html"
+
+lint: ## Lint with ruff
+	@$(PYTHON) -m ruff check src tests
+
+format: ## Auto-fix lint issues and format
+	@$(PYTHON) -m ruff check --fix src tests
+	@$(PYTHON) -m ruff format src tests
+
+build: clean ## Build sdist + wheel into dist/
+	@$(PYTHON) -m build
+
+check-dist: build ## Validate the built distributions
+	@$(PYTHON) -m twine check dist/*
 
 verify: ## Verify all imports work
-	@$(PYTHON) -c "\
+	@$(PYTHON) -c "if True: \
 		import torch; print(f'  torch        {torch.__version__}'); \
 		import torchaudio; print(f'  torchaudio   {torchaudio.__version__}'); \
 		import speechbrain; print(f'  speechbrain  {speechbrain.__version__}'); \
 		import streamlink; print(f'  streamlink   {streamlink.__version__}'); \
 		import click; print(f'  click        {click.__version__}'); \
 		import faster_whisper; print(f'  faster-whisper {faster_whisper.__version__}'); \
+		import importlib.metadata as md, mcp; print(f'  mcp          {md.version(\"mcp\")}'); \
 		import numpy; print(f'  numpy        {numpy.__version__}'); \
 		import kickvoice; print(f'  kickvoice    {kickvoice.__version__}'); \
 		print('✅ All OK')"
@@ -80,9 +98,9 @@ verify: ## Verify all imports work
 profiles: ## List enrolled speaker profiles
 	@$(KICKVOICE) profiles list
 
-clean: ## Remove pycache and build artifacts
+clean: ## Remove pycache, coverage and build artifacts
 	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	@rm -rf build/ dist/ *.egg-info 2>/dev/null || true
+	@rm -rf build/ dist/ src/*.egg-info .coverage .coverage.* htmlcov .pytest_cache .ruff_cache 2>/dev/null || true
 	@echo "✅ Cleaned"
 
 reset: clean ## Full reset — remove venv, caches, and profiles

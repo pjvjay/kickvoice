@@ -158,7 +158,7 @@ fi
 
 # ── 6. Install kickvoice and remaining deps ──────────────────
 info "Installing kickvoice and dependencies..."
-pip install -e "${SCRIPT_DIR}[youtube,transcribe,agent,dev]" --quiet
+pip install -e "${SCRIPT_DIR}[all,dev]" --quiet
 ok "kickvoice installed"
 
 # ── 7. Install streamlink ────────────────────────────────────
@@ -209,6 +209,13 @@ try:
     print(f'  faster-whisper {faster_whisper.__version__}')
 except ImportError as e:
     errors.append(f'faster-whisper: {e}')
+
+try:
+    import importlib.metadata as md
+    import mcp  # noqa: F401
+    print(f'  mcp          {md.version("mcp")}')
+except ImportError as e:
+    errors.append(f'mcp: {e}')
 
 try:
     import numpy

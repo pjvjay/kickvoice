@@ -36,11 +36,21 @@ def test_legacy_index_loads(config):
     pdir = config.profiles_dir
     pdir.mkdir(parents=True, exist_ok=True)
     np.save(pdir / "drdisrespect.npy", unit(5))
-    (pdir / "index.json").write_text(json.dumps({"DrDisrespect": {
-        "name": "DrDisrespect", "embedding_file": "drdisrespect.npy",
-        "enrolled_at": "2024-01-01T00:00:00", "source_urls": ["x"], "n_segments": 12,
-        "notes": "", "some_future_field": 1,
-    }}))
+    (pdir / "index.json").write_text(
+        json.dumps(
+            {
+                "DrDisrespect": {
+                    "name": "DrDisrespect",
+                    "embedding_file": "drdisrespect.npy",
+                    "enrolled_at": "2024-01-01T00:00:00",
+                    "source_urls": ["x"],
+                    "n_segments": 12,
+                    "notes": "",
+                    "some_future_field": 1,
+                }
+            }
+        )
+    )
     store = ProfileStore(config)
     p = store.get_profile("DrDisrespect")
     assert p.speech_seconds == 0.0 and p.embedding_model == ""
@@ -51,8 +61,9 @@ def test_merge_is_speech_weighted(config):
     store = ProfileStore(config)
     a, b = unit(1), unit(2)
     store.add_profile("Amy", a, speech_seconds=300)
-    store.merge_into_profile("Amy", b, speech_seconds=100, n_segments=5,
-                             source_urls=["https://kick.com/amy"], note="from stream")
+    store.merge_into_profile(
+        "Amy", b, speech_seconds=100, n_segments=5, source_urls=["https://kick.com/amy"], note="from stream"
+    )
     expected = (a * 300 + b * 100) / 400
     expected /= np.linalg.norm(expected)
     got = ProfileStore(config)
@@ -66,7 +77,7 @@ def test_merge_is_speech_weighted(config):
 def test_merge_legacy_profile_equal_weight(config):
     store = ProfileStore(config)
     a, b = unit(1), unit(2)
-    store.add_profile("Old", a)          # speech_seconds unknown (0)
+    store.add_profile("Old", a)  # speech_seconds unknown (0)
     store.merge_into_profile("Old", b, speech_seconds=50)
     expected = (a + b) / np.linalg.norm(a + b)
     assert np.allclose(store.get_embedding("Old"), expected)
@@ -78,6 +89,7 @@ def test_merge_unknown_profile_raises(config):
 
 
 # ── packs ────────────────────────────────────────────────────────
+
 
 def test_pack_roundtrip(config, tmp_path):
     src = ProfileStore(config)
@@ -141,7 +153,7 @@ def test_pack_conflicts(config, tmp_path, mode):
 
     config.profiles_dir = tmp_path / "mine"
     mine = ProfileStore(config)
-    mine.add_profile("amy", unit(1), speech_seconds=100)   # differs only by case
+    mine.add_profile("amy", unit(1), speech_seconds=100)  # differs only by case
     r = import_pack(mine, tmp_path / "p.json", on_conflict=mode)
 
     if mode == "skip":

@@ -4,26 +4,42 @@ import wave
 import pytest
 
 from conftest import FakeCapture, FakeEncoder, conversation, voice_vector
+from kickvoice.audio.vad import EnergyVAD
 from kickvoice.pipelines.extract import ProfileExtractor
 from kickvoice.pipelines.session import ExtractionSession, channel_name, find_session, source_slug
-from kickvoice.audio.vad import EnergyVAD
 from kickvoice.speakers.profiles import ProfileStore
 
-HOST, GUEST, CAMEO = 220, 550, 880   # three synthetic "voices"
+HOST, GUEST, CAMEO = 220, 550, 880  # three synthetic "voices"
 
 
 def talk_show():
     # host ~30s, guest ~18s, cameo 3s (below min speech → dropped)
-    return conversation([(HOST, 6), (GUEST, 4), (HOST, 5), (GUEST, 5), (HOST, 7),
-                         (CAMEO, 3), (HOST, 6), (GUEST, 5), (HOST, 6), (GUEST, 4)])
+    return conversation(
+        [
+            (HOST, 6),
+            (GUEST, 4),
+            (HOST, 5),
+            (GUEST, 5),
+            (HOST, 7),
+            (CAMEO, 3),
+            (HOST, 6),
+            (GUEST, 5),
+            (HOST, 6),
+            (GUEST, 4),
+        ]
+    )
 
 
 def make(config, pcm, store=None, url="https://kick.com/SomeChannel"):
     lines = []
     ex = ProfileExtractor(
-        stream_url=url, config=config, capture=FakeCapture(pcm),
-        vad=EnergyVAD(config.audio), encoder=FakeEncoder(),
-        store=store or ProfileStore(config), out=lines.append,
+        stream_url=url,
+        config=config,
+        capture=FakeCapture(pcm),
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(),
+        store=store or ProfileStore(config),
+        out=lines.append,
     )
     return ex, lines
 
@@ -47,7 +63,7 @@ def test_discovers_each_voice(config):
     data = json.loads((session.path / "session.json").read_text())
     assert len(data["candidates"]) == 2 and data["source"].endswith("SomeChannel")
     assert session.id.endswith("_somechannel")
-    assert any("Found 2 speaker(s)" in l for l in lines)
+    assert any("Found 2 speaker(s)" in line for line in lines)
 
 
 def test_non_overlapping_blocks_requested_and_capture_closed(config):
@@ -71,7 +87,7 @@ def test_matches_known_profile(config):
     host, guest = ex.run(max_duration_s=0).candidates
     assert host.matched and host.best_match == "TheHost" and host.best_similarity > 0.9
     assert not guest.matched and guest.best_match == "TheHost"
-    assert any("✅ TheHost" in l for l in lines)
+    assert any("✅ TheHost" in line for line in lines)
 
 
 def test_no_speech_returns_none(config):
@@ -84,7 +100,7 @@ def test_too_little_speech_returns_none(config):
     config.extract.min_speaker_speech_s = 60
     ex, lines = make(config, talk_show())
     assert ex.run(max_duration_s=0) is None
-    assert any("--min-speech" in l for l in lines)
+    assert any("--min-speech" in line for line in lines)
 
 
 def test_keyboard_interrupt_keeps_what_was_captured(config):
@@ -97,23 +113,31 @@ def test_keyboard_interrupt_keeps_what_was_captured(config):
                 yield chunk
 
     lines = []
-    ex = ProfileExtractor(stream_url="https://kick.com/x", config=config,
-                          capture=InterruptingCapture(talk_show()),
-                          vad=EnergyVAD(config.audio), encoder=FakeEncoder(),
-                          store=ProfileStore(config), out=lines.append)
+    ex = ProfileExtractor(
+        stream_url="https://kick.com/x",
+        config=config,
+        capture=InterruptingCapture(talk_show()),
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(),
+        store=ProfileStore(config),
+        out=lines.append,
+    )
     session = ex.run(max_duration_s=0)
     assert session is not None and len(session.candidates) >= 1
-    assert any("Stopped listening after 40s" in l for l in lines)
+    assert any("Stopped listening after 40s" in line for line in lines)
 
 
-@pytest.mark.parametrize("url,expected", [
-    ("https://kick.com/SomeChannel", "SomeChannel"),
-    ("kick.com/xqc?foo=1", "xqc"),
-    ("https://www.kick.com/adin/videos/abc-123", "adin"),
-    ("https://kick.com/video/3f2a", None),
-    ("https://twitch.tv/foo", None),
-    ("/tmp/vod.mp4", None),
-])
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://kick.com/SomeChannel", "SomeChannel"),
+        ("kick.com/xqc?foo=1", "xqc"),
+        ("https://www.kick.com/adin/videos/abc-123", "adin"),
+        ("https://kick.com/video/3f2a", None),
+        ("https://twitch.tv/foo", None),
+        ("/tmp/vod.mp4", None),
+    ],
+)
 def test_channel_name(url, expected):
     assert channel_name(url) == expected
 
@@ -126,7 +150,7 @@ def test_find_session(config):
     root = config.extractions_dir
     a = ExtractionSession.create(root, "https://kick.com/a", "m")
     a.save()
-    assert find_session(root, None) is None            # no pending candidates
+    assert find_session(root, None) is None  # no pending candidates
     assert find_session(root, a.id).id == a.id
     assert find_session(root, str(a.path)).id == a.id
     assert find_session(root, "nope") is None

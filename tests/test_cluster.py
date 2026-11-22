@@ -1,8 +1,13 @@
+from itertools import pairwise
+
 import numpy as np
 import pytest
 
 from kickvoice.speakers.cluster import (
-    cluster_speakers, covered_seconds, make_windows, representative_windows,
+    cluster_speakers,
+    covered_seconds,
+    make_windows,
+    representative_windows,
 )
 
 SR = 16000
@@ -33,8 +38,9 @@ def _blobs(sizes, dim=64, spread=0.15, seed=0):
     centers = rng.normal(size=(len(sizes), dim))
     x, y = [], []
     for k, n in enumerate(sizes):
-        x.append(centers[k] + rng.normal(scale=spread * np.linalg.norm(centers[k]) / np.sqrt(dim),
-                                         size=(n, dim)))
+        x.append(
+            centers[k] + rng.normal(scale=spread * np.linalg.norm(centers[k]) / np.sqrt(dim), size=(n, dim))
+        )
         y += [k] * n
     return np.vstack(x), np.array(y)
 
@@ -48,7 +54,7 @@ def test_recovers_speakers_and_orders_by_speech():
     clusters = cluster_speakers(x, _spans(len(x)), SR, distance_threshold=0.5, min_speech_s=0)
     assert [c.n_windows for c in clusters] == [40, 25, 12]
     for c in clusters:
-        assert len(set(y[c.indices])) == 1           # pure
+        assert len(set(y[c.indices])) == 1  # pure
         assert np.isclose(np.linalg.norm(c.centroid), 1.0)
         assert c.cohesion > 0.9
 
@@ -61,8 +67,7 @@ def test_small_clusters_dropped():
 
 def test_subsampling_assigns_remaining_windows():
     x, y = _blobs([300, 200])
-    clusters = cluster_speakers(x, _spans(len(x)), SR, distance_threshold=0.5,
-                                min_speech_s=0, max_windows=60)
+    clusters = cluster_speakers(x, _spans(len(x)), SR, distance_threshold=0.5, min_speech_s=0, max_windows=60)
     assert sorted(c.n_windows for c in clusters) == [200, 300]
     for c in clusters:
         assert len(set(y[c.indices])) == 1
@@ -86,5 +91,5 @@ def test_representative_windows_non_overlapping_time_ordered():
     ids = representative_windows(c, x, spans, SR, target_s=10)
     chosen = [spans[i] for i in ids]
     assert chosen == sorted(chosen)
-    assert all(a[1] <= b[0] for a, b in zip(chosen, chosen[1:]))
+    assert all(a[1] <= b[0] for a, b in pairwise(chosen))
     assert sum(e - s for s, e in chosen) >= 9 * SR

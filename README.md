@@ -1,46 +1,154 @@
 # kickvoice
 
-**Speaker identification on Kick.com live streams.**
+**Speaker identification, transcription, opposition research and an AI debate
+copilot for Kick.com live streams.**
 
-Detects *who* is speaking on a live stream by comparing voice embeddings against
-enrolled speaker profiles. Uses SpeechBrain's ECAPA-TDNN model (trained on VoxCeleb)
-for speaker-discriminative embeddings.
+- **Who's speaking:** voice profiles built with ECAPA-TDNN (SpeechBrain), matched live.
+- **What they said:** speaker-attributed transcripts from Whisper.
+- **What they've said before:** a cited, fact-checked record of a public
+  figure's public statements.
+- **Agents that do the work:** `extract-profiles` and `monitor` spawn goal-driven
+  AI agents that drive all of the above through kickvoice's own
+  [MCP](https://modelcontextprotocol.io) server. They write reports and full
+  step-by-step traces.
 
 > ⚠️ **Not Dejavu.** This is speaker *recognition* (identify a person by voice),
 > not audio *fingerprinting* (match a specific recording). See [Architecture](#architecture).
 
-## Prerequisites
+## Installation
 
-- Python 3.10+
-- ffmpeg (`brew install ffmpeg` / `sudo apt install ffmpeg`)
+**Requirements:**
+- Python 3.10–3.12
+- [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg` / `sudo apt install ffmpeg`)
+- For agents: an LLM API key (`ANTHROPIC_API_KEY` by default), or a local
+  OpenAI-compatible model. Alternatively, run agents with `--policy rules`,
+  which needs no model.
 
-## Quick Start
-
-### 1. Setup (one time)
-
-The interactive setup script creates a virtual environment, installs all
-dependencies (PyTorch, SpeechBrain, streamlink, etc.), and optionally
-pre-downloads the ML models:
+### Option A: pip (a standard Python package)
 
 ```bash
-git clone <this-repo>
-cd kickvoice
+# 1. PyTorch first, from pytorch.org: pick the CPU or CUDA build for your machine.
+#    Installing torch and torchaudio together keeps them on matching builds.
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# 2. kickvoice with everything (agents, transcription, YouTube):
+pip install "kickvoice[all] @ git+https://github.com/kickvoice/kickvoice"
+# …or from a built wheel:  pip install "kickvoice-0.2.0-py3-none-any.whl[all]"
+
+kickvoice --help
+```
+
+| Extra | Adds |
+|---|---|
+| *(none)* | Voice profiles, speaker ID, profile extraction, research |
+| `transcribe` | Speaker-attributed transcription (faster-whisper) |
+| `agent` | The MCP server and the spawned agents (`mcp`) |
+| `youtube` | Enrolment from YouTube, YouTube/Twitch research (`yt-dlp`) |
+| `all` | All of the above |
+| `dev` | pytest, coverage, ruff, build, twine |
+
+### Option B: the setup script (creates a virtualenv for you)
+
+```bash
+git clone <this-repo> && cd kickvoice
 chmod +x setup.sh run.sh
-./setup.sh
+./setup.sh          # asks CPU or GPU PyTorch, installs kickvoice[all,dev] into .venv
 ```
 
-The setup will prompt you to choose CPU or GPU PyTorch and whether to
-download models now.
+Afterwards `./run.sh <command>` runs kickvoice inside that environment;
+`kickvoice <command>` works the same once the venv is activated. Non-interactive
+alternatives: `make install`, `make install-gpu`, `make download-models`.
 
-**Alternative: non-interactive setup via Make**
+## The two agent commands
+
+Both commands spawn an AI agent with a specific goal. The agent works only
+through kickvoice's MCP tools, and the server is started as a separate
+process (`kickvoice mcp`), exactly as Claude Desktop or Claude Code would
+use it.
 
 ```bash
-make install            # CPU PyTorch (smaller, ~200MB)
-make install-gpu        # CUDA GPU PyTorch (~2GB)
-make download-models    # Pre-download ML models
+./run.sh extract-profiles --stream "https://kick.com/somechannel"
+./run.sh monitor --stream "https://kick.com/somechannel" --opponent "Jane Pundit"
 ```
 
-### 2. Enroll speakers
+| | `extract-profiles` | `monitor` |
+|---|---|---|
+| **Goal** | Build voice profiles for everyone who speaks | Help you answer the opponent's arguments in chat |
+| **How** | Listens, then identifies each distinct voice (what's said, the channel, Wikidata for public figures), exports a clip, asks you, enrolls approved voices | Follows the debate, recognises the opponent by voice, and for each argument drafts chat replies grounded in their record |
+| **Your part** | Approve or name each voice (nothing is created without you) | Type a reply's number to copy it (nothing is posted for you) |
+| **Outputs** | Report + voice clips + trace | Report (arguments, replies, sources) + trace |
+
+**How an agent runs.** A lightweight orchestrator follows the stream over
+MCP and wakes the agent only when there is something to decide. Each
+decision is a short, bounded **episode** ("identify these voices", "answer
+argument p3"), with a step cap, a timeout and a whole-run token budget. So a
+three-hour stream doesn't become one ever-growing, expensive conversation.
+
+```
+run.sh monitor ─▶ run folder + config ─▶ spawns `kickvoice mcp` (stdio)
+      │                                          ▲
+      ▼                                          │ MCP tool calls
+  orchestrator ── get_live_updates (long-poll) ──┤
+      │ new argument / unknown voice             │
+      ▼                                          │
+  agent episode (model + tools: get_point_evidence, propose_replies, …)
+      │ propose_replies
+      ▼
+  orchestrator fact-checks every reply (verify_message) ─▶ shown to you ─▶ "2" copies it
+```
+
+**Policies:**
+- `--policy llm` (default): a model drives the agent. Set `ANTHROPIC_API_KEY`,
+  or use an OpenAI-compatible server (see [Models](#7-research-an-opponent-then-get-live-counter-arguments)).
+- `--policy rules`: a deterministic agent with no model. It uses the same MCP
+  tools and writes the same traces and reports. `extract-profiles` asks you
+  to name each voice; `monitor` offers "receipts", their own past words on
+  the topic, verbatim and dated.
+- `--no-agent`: the original pipelines, with no agent at all.
+
+**Outputs.** Every run writes a folder under `~/.kickvoice/runs/`:
+
+```
+20250601-201500_monitor_somechannel/
+  report.md / report.json   what the run produced
+  trace.jsonl               every step, written live: model calls (with token counts),
+                            tool calls + results, questions to you and your answers,
+                            decisions, live transcript events, errors
+  config.json               the exact settings used
+  mcp_server.log            the MCP server's own log
+  clips/                    voice clips for review (extract-profiles)
+```
+
+Useful options:
+- `--duration S`: how long to listen.
+- `--model M`: the model to use.
+- `--max-tokens N`: token budget for the run (default 2M; 0 = no cap).
+- `--opponent` / `--me` (monitor).
+- `--min-speech S` (extract-profiles).
+
+Agent settings live in the `agent` section of `config.json`.
+
+### Validating it yourself
+
+**No API key or live stream needed.** Point the commands at any recording
+with two or more people talking:
+
+```bash
+./run.sh extract-profiles --file debate.mp4 --policy rules --min-speech 10
+#   → name each voice when asked; check report.md, the clips, and `kickvoice profiles list`
+./run.sh research add "Jane Pundit" --voice Jane --x JanePundit
+./run.sh research collect "Jane Pundit" && ./run.sh research analyze "Jane Pundit"
+./run.sh monitor --file debate.mp4 --opponent "Jane Pundit" --policy rules
+#   → arguments appear with "receipts"; type a number to copy; read report.md + trace.jsonl
+```
+
+**With a model:** repeat the commands without `--policy rules`, then compare
+the `trace.jsonl` of the two runs. It shows each agent decision and the tool
+call behind it.
+
+## Usage guide
+
+### 1. Enroll speakers
 
 Use the `run.sh` wrapper (auto-activates the venv), or activate manually:
 
@@ -71,10 +179,13 @@ Files and URLs can be mixed, and every source is used once:
 > **Tip:** Use 2-3 videos per speaker with different contexts (calm, excited,
 > shouting) for more robust profiles. More source material = better accuracy.
 
-### 3. Monitor a Kick.com stream
+### 2. Monitor a Kick.com stream (speaker ID only)
+
+`monitor` spawns the debate-copilot agent (see above). For plain
+who-is-speaking output, use the classic pipeline:
 
 ```bash
-./run.sh monitor --stream "https://kick.com/somechannel"
+./run.sh monitor --stream "https://kick.com/somechannel" --no-agent
 ```
 
 Output:
@@ -89,20 +200,21 @@ Output:
 [14:32:28] xQc detected (confidence: 0.74)
 ```
 
-### 4. Test with a local file
+### 3. Test with a local file
 
 ```bash
-./run.sh monitor --file recording.wav
+./run.sh monitor --file recording.wav --no-agent
 ```
 
-### 5. Extract profiles from a stream (discover who's talking)
+### 4. Extract profiles without an agent (discover who's talking)
 
 Don't have clean enrollment audio? Let kickvoice listen to a stream, work out
-how many distinct voices there are, and build profiles from them — with you
-approving every one.
+how many distinct voices there are, and build profiles from them, with you
+approving every one. By default this command spawns the profile-extraction
+agent (see above). `--no-agent` runs the original pipeline shown here:
 
 ```bash
-./run.sh extract-profiles --stream "https://kick.com/somechannel"
+./run.sh extract-profiles --stream "https://kick.com/somechannel" --no-agent
 ```
 
 ```
@@ -172,7 +284,7 @@ collected. Sessions (voiceprints + review clips) live in
 > (e.g. GDPR, Illinois BIPA) before storing or sharing profiles of private
 > individuals.
 
-### 6. Manage and share profiles
+### 5. Manage and share profiles
 
 ```bash
 ./run.sh profiles list
@@ -195,7 +307,7 @@ Packs record the embedding model that produced them. Voiceprints from
 different models aren't comparable, so importing a pack made with a
 different model is refused.
 
-### 7. Transcribe: who said what
+### 6. Transcribe: who said what
 
 ```bash
 ./run.sh transcribe --stream "https://kick.com/somechannel"
@@ -269,7 +381,7 @@ were all labelled "probable", so analysis should use confident lines only.
 - Transcription needs the `faster-whisper` package (installed by setup). The
   Whisper model downloads on first use.
 
-### 8. Research an opponent, then get live counter-arguments
+### 7. Research an opponent, then get live counter-arguments
 
 Before a debate, kickvoice builds a cited record of what your opponent has
 said publicly. During the debate, it listens for their points and suggests
@@ -391,105 +503,97 @@ enables semantic search on top of the built-in full-text search.
 suggestions stay current. Every suggestion is logged to
 `~/.kickvoice/debates/*.jsonl` for review afterwards.
 
-### 9. Agent mode (MCP): a chat copilot while you watch
+### 8. Agent mode (MCP): a live chat copilot
 
-`./run.sh mcp` runs kickvoice as an [MCP](https://modelcontextprotocol.io)
-server. An AI agent (Claude Desktop, Claude Code, or any MCP host) can then
-listen to the stream you're watching, know who's speaking, look up their
-record, and draft replies **for you to paste into chat yourself**.
+`kickvoice mcp` runs kickvoice as an [MCP](https://modelcontextprotocol.io)
+server, so an AI agent (Claude Desktop, Claude Code, or any MCP client) can
+run the whole loop for you:
+- follow the stream,
+- work out who's speaking (and enroll a new voice),
+- research the opponent in the background,
+- draft chat replies to their arguments, grounded in their record.
 
-**Connect it**
+You pick a reply and paste it into chat yourself. The agent can copy your
+chosen reply to the clipboard, but **never posts to chat**.
+
+**Connect it:**
 
 ```bash
 # Claude Code
-claude mcp add kickvoice -- /absolute/path/to/kickvoice/run.sh mcp
+claude mcp add kickvoice -- /path/to/kickvoice/run.sh mcp
 ```
-
-Claude Desktop (`claude_desktop_config.json`):
 
 ```json
-{
-  "mcpServers": {
-    "kickvoice": {
-      "command": "/absolute/path/to/kickvoice/run.sh",
-      "args": ["mcp"],
-      "env": {"ANTHROPIC_API_KEY": "…", "X_BEARER_TOKEN": "…"}
-    }
-  }
-}
+// Claude Desktop: claude_desktop_config.json
+{"mcpServers": {"kickvoice": {"command": "/path/to/kickvoice/run.sh", "args": ["mcp"]}}}
 ```
 
-The `env` keys are only needed for the research tools that use them.
+Then ask: *"Use the live_chat_copilot prompt for https://kick.com/somechannel,
+opponent Jane Pundit."* Or just describe what you want; the server's
+instructions explain the workflow to the agent.
 
-**Use it.** Pick the **`chat_copilot`** prompt (give it the stream URL and
-your chat style), or just ask: *"watch kick.com/somechannel and help me
-reply to Destiny"*. The agent then loops:
+**How the loop works:**
 
 ```
-live_next_point ──► point + who said it + evidence from their record
-      │                 (waits until someone finishes making a point)
-      ▼
-agent drafts 2-3 replies in your voice, grounded in the evidence
-      │
-check_chat_message ──► length ok? markdown stripped? quotes verbatim?
-      │
-you pick one ──► copy_to_clipboard ──► you paste it in chat
+start_live_session ─▶ get_live_updates (long-poll, cursor) ─▶ "line" / "point" / "voices" events
+                                                                    │
+        unknown voice? ─▶ list_voices ─▶ (you confirm) enroll_voice ─▶ set_opponent
+                                                                    │ point
+        get_point_evidence ─▶ agent drafts replies ─▶ verify_message ─▶ you pick ─▶ copy_to_clipboard
+        (or suggest_counters: replies from kickvoice's own model, already verified)
+
+   thin record? research_find_identity ─▶ (you confirm) research_link_wikidata
+                ─▶ research_collect / research_analyze (background jobs, job_status)
 ```
 
-Unknown guest? The agent calls `live_voices`, asks you who they are,
-`save_voice`s them (later lines are then labelled with the name), and can
-research them in the background (`research_discover` → `research_collect`
-→ `research_analyze`, polled with `job_status`).
-
-| Tools | |
+| Tools | What for |
 |---|---|
-| Listening | `live_start`, `live_next_point`, `live_status`, `live_transcript`, `live_stop` |
-| Voices | `live_voices`, `save_voice` |
-| Research | `research_subjects`, `research_profile`, `research_search`, `research_claims`, `research_add`, `research_discover`, `research_link_record`, `research_collect`, `research_analyze`, `job_status` |
-| Chat | `check_chat_message`, `copy_to_clipboard` |
+| `start_live_session`, `get_live_updates`, `stop_live_session`, `list_live_sessions` | Follow a stream; events carry transcript lines and the opponent's points |
+| `list_voices`, `enroll_voice`, `set_opponent` | Who's speaking; turn an unknown voice into a profile mid-stream |
+| `research_subjects`, `research_profile`, `research_search` | What's on record |
+| `research_find_identity`, `research_link_wikidata`, `research_add_subject` | Identify someone (people only; links nothing without a confirm step) |
+| `research_collect`, `research_analyze`, `job_status` | Background research jobs |
+| `get_point_evidence`, `suggest_counters` | Evidence to write a reply / ready-made replies |
+| `verify_message`, `format_for_chat`, `copy_to_clipboard` | Check a reply, make it chat-shaped, copy it |
 
-**Drafts, not posts.** Nothing posts to chat. You read each draft, edit it
-if you like, and send it from your own account. The copilot prompt keeps
-replies to one per point (chats have slow mode and spam filters), argues
-with the point rather than the person, and doesn't invent facts. Words in
-quotation marks must match the cited evidence word for word, or
-`check_chat_message` rejects the draft.
+**Keeping replies accurate.** A chat message can't be corrected once it's
+sent, so `verify_message` checks every reply before it's offered:
+- **Quotes must be exact.** Quoted words must appear *exactly* in the
+  opponent's own first-hand statements. Only case and punctuation may
+  differ; `...` can join exact fragments. One changed word ("raise" → "abolish") fails.
+- **Third-party words can't be passed off as theirs.** Words only found in
+  reports *about* them fail as quotes.
+- **Years need dated evidence.** A year in the reply must match evidence
+  from that year.
+- **"You said…" needs a source.** Claims like that must cite something they
+  actually said.
+- **It has to fit chat.** Replies are single-line and at most
+  `agent.chat_max_chars` characters (default 300). Links are flagged,
+  because many chats block them.
 
-**Chat settings** (`config.json`):
+`suggest_counters` runs these checks on its own replies. An agent writing its
+own replies is told to run `verify_message` first.
 
-```json
-{"chat": {"max_chars": 500, "allow_links": false,
-          "style": "lowercase, short, dry humour, no emojis"}}
-```
-
-**Latency.** Each point reports `behind_live_s`, and `live_status` reports
-`realtime_factor`. In testing on CPU, points arrived about 10–25 seconds
-after they were said. That's an 8-second transcription block, plus waiting
-for the speaker to finish their point, plus processing. The copilot skips
-points that are more than about a minute old. A GPU, or a smaller Whisper
-model, shortens the gap.
-
-**Good to know**
-- Reply quality depends on your agent's model. Evidence quality depends on
-  research done *before* the stream: live research jobs take minutes.
-- The MCP server writes nothing to stdout except the protocol. Logs go to
-  stderr, which hosts usually show in their MCP log view.
-- Saving a voice mid-stream from a few seconds of speech gives a weak
-  profile. `save_voice` warns you, and you can merge more audio into it later.
+**Needs:** `pip install -e ".[agent]"` (setup installs it). Server-side
+suggestions and analysis use your configured model (`ANTHROPIC_API_KEY`
+etc.). Without a key, the agent can still use `get_point_evidence` and
+write replies itself. Logs go to stderr, since stdout carries the protocol.
 
 ## Make Targets
 
 ```
 make help              Show all targets
-make setup             Full interactive setup
-make install           Non-interactive install (CPU torch)
-make install-gpu       Non-interactive install (CUDA torch)
+make setup             Full interactive setup (./setup.sh)
+make install           Non-interactive install into .venv (CPU torch)
+make install-gpu       Non-interactive install into .venv (CUDA torch)
 make download-models   Pre-download ML models
 make verify            Check all imports work
-make profiles          List enrolled speakers
-make test              Run tests
-make clean             Remove pycache/build artifacts
-make reset             Remove venv entirely
+make test              Run the test suite
+make coverage          Tests + coverage report (fails under 90%)
+make lint / format     ruff check / auto-fix + format
+make build             Build sdist + wheel into dist/
+make check-dist        Build and validate with twine
+make clean / reset     Remove build & cache artifacts / the venv
 ```
 
 ## Architecture
@@ -627,78 +731,63 @@ end up in one group. Always listen to the review clip before accepting.
 
 ```
 kickvoice/
-├── setup.sh              # Interactive setup — creates venv + installs everything
-├── run.sh                # Wrapper — runs kickvoice without manual venv activation
-├── Makefile              # Make targets for setup, install, test, clean
-├── pyproject.toml        # Package metadata and dependencies
-├── kickvoice/
-│   ├── __init__.py
-│   ├── __main__.py       # Enables `python -m kickvoice`
-│   ├── cli.py            # Click CLI — thin commands that call a pipeline
+├── pyproject.toml        # Package metadata, dependencies/extras, pytest/coverage/ruff config
+├── src/kickvoice/
+│   ├── cli.py            # Click CLI — thin commands that call a pipeline or spawn an agent
 │   ├── cli_research.py   # `research …` and `debate` commands
 │   ├── config.py         # Configuration dataclasses (defaults + JSON file)
-│   ├── console.py        # Output formatting (messages, tables, durations)
-│   ├── audio/            # Getting audio in, in one shape: 16kHz mono PCM
-│   │   ├── ffmpeg.py     # Decoding, PCM conversions, wav writing
-│   │   ├── capture.py    # Stream (streamlink) + file capture, chunking
-│   │   ├── vad.py        # Voice activity detection (Silero + energy fallback)
-│   │   └── download.py   # yt-dlp downloads
-│   ├── speakers/         # What a voice *is*
-│   │   ├── encoder.py    # ECAPA-TDNN embeddings
-│   │   ├── profiles.py   # Profile storage (JSON index + .npy voiceprints)
-│   │   ├── identify.py   # Cosine similarity matching
-│   │   ├── cluster.py    # Windowing + agglomerative speaker clustering
-│   │   └── packs.py      # Profile pack export/import
-│   ├── transcripts/      # Who said what
-│   │   ├── asr.py        # Speech-to-text interface + faster-whisper
-│   │   ├── attribution.py# Word → speaker alignment rules (pure functions)
-│   │   ├── refine.py     # Whole-session attribution (voice groups)
-│   │   └── store.py      # SQLite transcript store + full-text search
-│   ├── agent/            # MCP server for AI agents
-│   │   ├── server.py     # Tools, copilot prompt, stdio entry point
-│   │   ├── live.py       # Background live session the agent polls
-│   │   ├── jobs.py       # Background jobs (collect / analyze)
-│   │   └── chat.py       # Chat-draft checks (length, markdown, verbatim quotes)
-│   ├── research/         # Opposition research + live counters
-│   │   ├── net.py        # Polite HTTP (rate limits, cache, robots.txt)
-│   │   ├── llm.py        # Anthropic / OpenAI-compatible clients, JSON validation
-│   │   ├── store.py      # SQLite: people, accounts, documents, claims (+ search)
-│   │   ├── sources/      # Wikipedia/Wikidata, YouTube, X, Reddit, web, local
-│   │   ├── extract.py    # Claim extraction with verbatim-quote verification
-│   │   ├── retrieve.py   # Hybrid retrieval (full-text + optional embeddings)
-│   │   ├── counter.py    # Live counter-argument engine (validated citations)
-│   │   └── brief.py      # Pre-debate brief
-│   └── pipelines/        # End-to-end flows
-│       ├── enroll.py     # Sources → profile
-│       ├── monitor.py    # Stream → who is speaking now
-│       ├── extract.py    # Stream → distinct voices → candidates
-│       ├── review.py     # Interactive approval (create / merge / skip)
-│       ├── session.py    # On-disk extraction sessions + review clips
-│       ├── transcribe.py # Stream → speaker-attributed transcript
-│       ├── research.py   # Discover accounts, collect public record
-│       └── debate.py     # Live: opponent's points → counter-arguments
-├── tests/                # pytest suite (no models/network needed)
-└── .venv/                # Created by setup.sh (gitignored)
+│   ├── console.py        # Output formatting
+│   ├── audio/            # ffmpeg, stream/file capture, VAD, yt-dlp downloads
+│   ├── speakers/         # ECAPA embeddings, profiles, identification, clustering, packs
+│   ├── transcripts/      # Whisper ASR, word→speaker attribution, session refinement, store
+│   ├── research/         # Polite HTTP, LLM clients, sources, claims, retrieval, counters, briefs
+│   ├── pipelines/        # enroll, monitor, extract, review, transcribe, research, debate
+│   └── agent/            # The agentic layer
+│       ├── server.py     #   MCP server (`kickvoice mcp`): tools + prompt
+│       ├── service.py    #   tool logic as plain Python
+│       ├── live.py       #   background live sessions + pollable event log
+│       ├── jobs.py       #   background research jobs
+│       ├── chat.py       #   chat formatting, reply fact-checking, clipboard
+│       ├── runner.py     #   spawns a goal agent for a CLI command; writes outputs
+│       ├── goals/        #   extract-profiles and monitor agents (llm + rules policies)
+│       ├── episode.py    #   bounded model-and-tools loop, token budget
+│       ├── toolbox.py    #   MCP client connection + local tools, all traced
+│       ├── toolcalling.py#   Anthropic / OpenAI-compatible tool calling
+│       ├── terminal.py   #   the person at the keyboard (questions + commands)
+│       └── trace.py      #   run folders and trace.jsonl
+├── tests/                # ~390 tests, no models or network needed
+├── setup.sh / run.sh     # Interactive venv setup / run inside it
+└── Makefile
 ```
 
 ## Development
 
 ```bash
-make install              # Sets up venv + deps
-source .venv/bin/activate # Activate for interactive dev
-pytest tests/             # Run tests (no models or network needed)
-make clean                # Remove pycache
+pip install -e ".[all,dev]"      # or: make install
+make lint                        # ruff (rules + formatting are enforced in CI)
+make coverage                    # pytest with branch coverage, fails under 90%
+make check-dist                  # build the sdist/wheel and validate them
 ```
 
-The test suite runs without ML models or network access: synthetic tones stand
-in for voices, and the encoder/VAD/capture components are injected, so the
-pipelines can be exercised end to end in seconds.
+- **No models or network needed.** Synthetic voices (pitched tones) stand in
+  for speakers, with fake encoder, ASR and model components. Fake HTTP
+  servers stand in for Wikipedia, X, Reddit and the model APIs. Fake
+  `streamlink`/`yt-dlp` executables stand in for the network tools.
+- **The real pipeline code runs end to end.** That includes the agents
+  spawning a real MCP server subprocess and talking to it over stdio.
+- **Subprocess coverage counts.** Coverage includes the code running inside
+  the spawned MCP servers (`[tool.coverage.run] patch = ["subprocess"]`).
+- **Slow tests are marked `slow`.** `pytest -m "not slow"` skips those that
+  launch whole CLI processes.
+- See `CONTRIBUTING.md` for the workflow and `CHANGELOG.md` for releases.
 
 ### Code layout in one sentence
 
 `audio/` gets sound into one shape (16kHz mono PCM), `speakers/` decides whose
-voice it is, `transcripts/` turns speech into attributed text, `pipelines/`
-are the end-to-end flows, and `cli.py` only parses options and prints results.
+voice it is, `transcripts/` turns speech into attributed text, `research/`
+builds the cited record, `pipelines/` are the end-to-end flows, `agent/`
+exposes all of it over MCP and runs goal-driven agents on top, and `cli.py`
+only parses options and prints results.
 
 ### CLI notes
 
@@ -717,7 +806,8 @@ work, so existing scripts don't break.
 
 ## Requirements
 
-- Python 3.10+
-- ffmpeg
-- ~200MB disk for CPU PyTorch + models (~2GB if using GPU PyTorch)
-- ~2GB RAM during monitoring
+- Python 3.10–3.12, ffmpeg
+- ~1GB disk for CPU PyTorch + models (several GB with CUDA PyTorch); Whisper
+  `small` adds ~500MB
+- ~2–4GB RAM during live transcription
+- Agents with `--policy llm`: an LLM API key or a local OpenAI-compatible server

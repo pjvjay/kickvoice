@@ -1,15 +1,21 @@
 """Transcription pipeline end to end (fake ASR + fake voices, real plumbing)."""
+
 import numpy as np
 import pytest
 
 from conftest import (
-    FakeCapture, FakeEncoder, FakeRecognizer, conversation, silence, voice_vector,
+    FakeCapture,
+    FakeEncoder,
+    FakeRecognizer,
+    conversation,
+    silence,
+    voice_vector,
 )
 from kickvoice.audio.vad import EnergyVAD
 from kickvoice.pipelines.transcribe import TranscriptionPipeline, speaker_label
-from kickvoice.transcripts.refine import refine_session
 from kickvoice.speakers.profiles import ProfileStore
 from kickvoice.transcripts.attribution import CONFIDENT, PROBABLE, UNKNOWN
+from kickvoice.transcripts.refine import refine_session
 from kickvoice.transcripts.store import TranscriptStore
 
 HOST, GUEST, STRANGER = 220, 550, 880
@@ -32,10 +38,18 @@ def transcripts(config):
 def run(config, pcm, profiles, transcripts, recognizer=None, duration=0, **kw):
     lines = []
     pipeline = TranscriptionPipeline(
-        stream_url="https://kick.com/SomeChannel", config=config,
-        capture=FakeCapture(pcm), vad=EnergyVAD(config.audio), encoder=FakeEncoder(),
-        recognizer=recognizer or FakeRecognizer(), profiles=profiles,
-        transcripts=transcripts, on_utterance=lines.append, out=lambda _: None, **kw)
+        stream_url="https://kick.com/SomeChannel",
+        config=config,
+        capture=FakeCapture(pcm),
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(),
+        recognizer=recognizer or FakeRecognizer(),
+        profiles=profiles,
+        transcripts=transcripts,
+        on_utterance=lines.append,
+        out=lambda _: None,
+        **kw,
+    )
     session = pipeline.run(max_duration_s=duration)
     return pipeline, session, lines
 
@@ -53,7 +67,7 @@ def test_each_line_attributed_to_the_right_speaker(config, profiles, transcripts
     stored = transcripts.utterances(session.id)
     assert len(stored) == 5 and [u.text for u in stored] == [u.text for u in lines]
     for u in stored:
-        (voice,) = voice_of(u.text)                  # every line is one voice
+        (voice,) = voice_of(u.text)  # every line is one voice
         assert u.speaker == expected[voice]
         assert u.attribution == (UNKNOWN if voice == STRANGER else CONFIDENT)
         assert u.embedding is not None and u.embedding.shape == (192,)
@@ -81,8 +95,7 @@ def test_utterance_across_block_boundary_is_not_split(config, profiles, transcri
 
 def test_hallucinated_words_in_silence_are_dropped(config, profiles, transcripts):
     pcm = conversation([(HOST, 3), (GUEST, 3)], gap=2.0)
-    _, session, _ = run(config, pcm, profiles, transcripts,
-                        recognizer=FakeRecognizer(hallucinate=True))
+    _, session, _ = run(config, pcm, profiles, transcripts, recognizer=FakeRecognizer(hallucinate=True))
     texts = " ".join(u.text for u in transcripts.utterances(session.id))
     assert "thanks" not in texts and "w220" in texts
 
@@ -144,21 +157,27 @@ def test_soundalike_guest_is_not_given_the_hosts_name(config, profiles, transcri
     other = voice_vector(999)
     other -= (other @ host) * host
     other /= np.linalg.norm(other)
-    lookalike = 0.7 * host + np.sqrt(1 - 0.7 ** 2) * other          # cos(host) = 0.70
-    config.extract.cluster_distance_threshold = 0.2                  # calibrated to this "model"
+    lookalike = 0.7 * host + np.sqrt(1 - 0.7**2) * other  # cos(host) = 0.70
+    config.extract.cluster_distance_threshold = 0.2  # calibrated to this "model"
 
     lines = []
     pipeline = TranscriptionPipeline(
-        stream_url="https://kick.com/x", config=config,
+        stream_url="https://kick.com/x",
+        config=config,
         capture=FakeCapture(conversation([(HOST, 4), (SOUNDALIKE, 4), (HOST, 4), (SOUNDALIKE, 4)])),
-        vad=EnergyVAD(config.audio), encoder=FakeEncoder(noise=0.05, voices={SOUNDALIKE: lookalike}),
-        recognizer=FakeRecognizer(), profiles=profiles, transcripts=transcripts,
-        on_utterance=lines.append, out=lambda _: None)
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(noise=0.05, voices={SOUNDALIKE: lookalike}),
+        recognizer=FakeRecognizer(),
+        profiles=profiles,
+        transcripts=transcripts,
+        on_utterance=lines.append,
+        out=lambda _: None,
+    )
     session = pipeline.run(max_duration_s=0)
 
     # live (line by line) the soundalike was mistaken for the host...
     assert [u.speaker for u in lines] == ["Host", "Host", "Host", "Host"]
-    assert len({round(u.start_s) for u in lines}) == 4        # ...but kept as separate turns
+    assert len({round(u.start_s) for u in lines}) == 4  # ...but kept as separate turns
     # ...the whole-session check fixes it
     final = transcripts.utterances(session.id)
     assert [u.speaker for u in final] == ["Host", None, "Host", None]
@@ -175,7 +194,7 @@ def test_two_unknown_people_get_separate_voice_groups(config, profiles, transcri
     final = transcripts.utterances(session.id)
     labels = [speaker_label(u) for u in final]
     assert labels[0] == "Host"
-    assert labels[1] == labels[3] != labels[2]              # 880 twice, 660 once
+    assert labels[1] == labels[3] != labels[2]  # 880 twice, 660 once
     assert all(lbl.startswith("(voice") for lbl in labels[1:])
 
 
@@ -183,18 +202,22 @@ def test_short_line_keeps_label_only_if_speaker_was_found(config, profiles, tran
     from kickvoice.transcripts.store import Utterance
 
     session = transcripts.create_session("s", "src")
-    long_host = Utterance(session_id="s", start_s=0, end_s=4, text="a",
-                          embedding=voice_vector(HOST))
-    short_host = Utterance(session_id="s", start_s=5, end_s=5.6, text="b",
-                           speaker="Host", attribution=PROBABLE, similarity=0.7)
-    short_guest = Utterance(session_id="s", start_s=6, end_s=6.6, text="c",
-                            speaker="Guest", attribution=PROBABLE, similarity=0.7)
+    long_host = Utterance(session_id="s", start_s=0, end_s=4, text="a", embedding=voice_vector(HOST))
+    short_host = Utterance(
+        session_id="s", start_s=5, end_s=5.6, text="b", speaker="Host", attribution=PROBABLE, similarity=0.7
+    )
+    short_guest = Utterance(
+        session_id="s", start_s=6, end_s=6.6, text="c", speaker="Guest", attribution=PROBABLE, similarity=0.7
+    )
     transcripts.add_utterances([long_host, short_host, short_guest])
     names, matrix = profiles.embedding_matrix()
     refine_session(transcripts, session.id, names, matrix, config)
     got = transcripts.utterances(session.id)
     assert [(u.speaker, u.attribution) for u in got] == [
-        ("Host", CONFIDENT), ("Host", PROBABLE), (None, UNKNOWN)]   # no Guest voice found
+        ("Host", CONFIDENT),
+        ("Host", PROBABLE),
+        (None, UNKNOWN),
+    ]  # no Guest voice found
 
 
 def test_session_metadata(config, profiles, transcripts):
@@ -211,7 +234,7 @@ def test_silence_only(config, profiles, transcripts):
     rec = FakeRecognizer()
     pipeline, session, _ = run(config, silence(25), profiles, transcripts, recognizer=rec)
     assert transcripts.utterances(session.id) == []
-    assert rec.calls == []                          # ASR never runs on pure silence
+    assert rec.calls == []  # ASR never runs on pure silence
 
 
 def test_keyboard_interrupt_saves_what_was_done(config, profiles, transcripts):
@@ -225,9 +248,17 @@ def test_keyboard_interrupt_saves_what_was_done(config, profiles, transcripts):
     config.transcribe.chunk_duration_s = 5.0
     pcm = conversation([(HOST, 4)] * 6)
     pipeline = TranscriptionPipeline(
-        stream_url="https://kick.com/x", config=config, capture=Interrupting(pcm),
-        vad=EnergyVAD(config.audio), encoder=FakeEncoder(), recognizer=FakeRecognizer(),
-        profiles=profiles, transcripts=transcripts, on_utterance=None, out=lambda _: None)
+        stream_url="https://kick.com/x",
+        config=config,
+        capture=Interrupting(pcm),
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(),
+        recognizer=FakeRecognizer(),
+        profiles=profiles,
+        transcripts=transcripts,
+        on_utterance=None,
+        out=lambda _: None,
+    )
     session = pipeline.run(max_duration_s=0)
     stored = transcripts.utterances(session.id)
     assert stored and all(u.speaker == "Host" for u in stored)
@@ -250,21 +281,31 @@ def test_merged_voice_group_weak_lines_are_not_confident(config, profiles, trans
     other = voice_vector(999)
     other -= (other @ host) * host
     other /= np.linalg.norm(other)
-    lookalike = 0.68 * host + np.sqrt(1 - 0.68 ** 2) * other        # cos(host) = 0.68
-    config.extract.cluster_distance_threshold = 0.7                   # loose: groups merge
+    lookalike = 0.68 * host + np.sqrt(1 - 0.68**2) * other  # cos(host) = 0.68
+    config.extract.cluster_distance_threshold = 0.7  # loose: groups merge
 
     encoder = FakeEncoder(voices={SOUNDALIKE: lookalike})
     pipeline = TranscriptionPipeline(
-        stream_url="https://kick.com/x", config=config,
+        stream_url="https://kick.com/x",
+        config=config,
         capture=FakeCapture(conversation([(HOST, 4), (SOUNDALIKE, 4), (HOST, 4)], gap=1.5)),
-        vad=EnergyVAD(config.audio), encoder=encoder, recognizer=FakeRecognizer(),
-        profiles=profiles, transcripts=transcripts, on_utterance=None, out=lambda _: None)
+        vad=EnergyVAD(config.audio),
+        encoder=encoder,
+        recognizer=FakeRecognizer(),
+        profiles=profiles,
+        transcripts=transcripts,
+        on_utterance=None,
+        out=lambda _: None,
+    )
     session = pipeline.run(max_duration_s=0)
     final = transcripts.utterances(session.id)
-    assert len({u.voice_group for u in final}) == 1                   # merged
+    assert len({u.voice_group for u in final}) == 1  # merged
     assert [(u.speaker, u.attribution) for u in final] == [
-        ("Host", CONFIDENT), ("Host", PROBABLE), ("Host", CONFIDENT)]
-    assert final[1].similarity < 0.75 < final[0].similarity           # line's own score stored
+        ("Host", CONFIDENT),
+        ("Host", PROBABLE),
+        ("Host", CONFIDENT),
+    ]
+    assert final[1].similarity < 0.75 < final[0].similarity  # line's own score stored
 
 
 def test_model_failure_happens_before_capture_or_session(config, profiles, transcripts):
@@ -276,10 +317,18 @@ def test_model_failure_happens_before_capture_or_session(config, profiles, trans
 
     capture = FakeCapture(conversation([(HOST, 4)]))
     pipeline = TranscriptionPipeline(
-        stream_url="https://kick.com/x", config=config, capture=capture,
-        vad=EnergyVAD(config.audio), encoder=FakeEncoder(), recognizer=Broken(),
-        profiles=profiles, transcripts=transcripts, on_utterance=None, out=lambda _: None)
+        stream_url="https://kick.com/x",
+        config=config,
+        capture=capture,
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(),
+        recognizer=Broken(),
+        profiles=profiles,
+        transcripts=transcripts,
+        on_utterance=None,
+        out=lambda _: None,
+    )
     with pytest.raises(ASRUnavailable):
         pipeline.run()
-    assert transcripts.list_sessions() == []          # no empty session left behind
-    assert capture.requested is None                  # stream never opened
+    assert transcripts.list_sessions() == []  # no empty session left behind
+    assert capture.requested is None  # stream never opened

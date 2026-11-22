@@ -20,3 +20,10 @@ logs/
 *.mp4
 ~/.kickvoice/
 
+
+# build / test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+src/*.egg-info/

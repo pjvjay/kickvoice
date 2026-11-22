@@ -1,4 +1,5 @@
 """Collectors against a fake web server / fake yt-dlp."""
+
 import json
 from pathlib import Path
 
@@ -9,7 +10,13 @@ from kickvoice.research.net import Fetcher
 from kickvoice.research.sources import local, social, web, wiki, youtube
 from kickvoice.research.sources.base import SourceContext
 from kickvoice.research.store import (
-    ABOUT, CANDIDATE, CONFIRMED, SELF, SELF_CHANNEL, SELF_VOICE, ResearchStore,
+    ABOUT,
+    CANDIDATE,
+    CONFIRMED,
+    SELF,
+    SELF_CHANNEL,
+    SELF_VOICE,
+    ResearchStore,
 )
 
 # Real YouTube auto-caption layout: a whitespace-only line INSIDE each cue,
@@ -58,31 +65,46 @@ def ctx(rconfig, store, person):
 
 # ── Wikidata / Wikipedia ─────────────────────────────────────────
 
-WIKIDATA_ENTITY = {"entities": {"Q42": {
-    "labels": {"en": {"value": "Jane Pundit"}},
-    "descriptions": {"en": {"value": "American political streamer"}},
-    "sitelinks": {"enwiki": {"title": "Jane Pundit"}},
-    "claims": {
-        "P31": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
-        "P2002": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "JanePundit"}}},
-                  {"rank": "deprecated", "mainsnak": {"datavalue": {"value": "OldJane"}}}],
-        "P2397": [{"rank": "preferred", "mainsnak": {"datavalue": {"value": "UC" + "a" * 22}}}],
-        "P856": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "https://jane.example"}}}],
-    }}}}
+WIKIDATA_ENTITY = {
+    "entities": {
+        "Q42": {
+            "labels": {"en": {"value": "Jane Pundit"}},
+            "descriptions": {"en": {"value": "American political streamer"}},
+            "sitelinks": {"enwiki": {"title": "Jane Pundit"}},
+            "claims": {
+                "P31": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
+                "P2002": [
+                    {"rank": "normal", "mainsnak": {"datavalue": {"value": "JanePundit"}}},
+                    {"rank": "deprecated", "mainsnak": {"datavalue": {"value": "OldJane"}}},
+                ],
+                "P2397": [{"rank": "preferred", "mainsnak": {"datavalue": {"value": "UC" + "a" * 22}}}],
+                "P856": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "https://jane.example"}}}],
+            },
+        }
+    }
+}
 
 
 def wikidata_routes(fake_web):
     def api(req):
         q = req["query"]
         if q.get("action") == "wbsearchentities":
-            return 200, {}, {"search": [{"id": "Q42", "label": "Jane Pundit",
-                                         "description": "American political streamer"}]}
+            return (
+                200,
+                {},
+                {
+                    "search": [
+                        {"id": "Q42", "label": "Jane Pundit", "description": "American political streamer"}
+                    ]
+                },
+            )
         if q.get("action") == "query" and q.get("list") == "search":
             hit = q["srsearch"] == "haswbstatement:P2002=JanePundit"
             return 200, {}, {"query": {"search": [{"title": "Q42"}] if hit else []}}
         if q.get("action") == "wbgetentities":
             return 200, {}, WIKIDATA_ENTITY
         return 400, {}, {"error": "?"}
+
     fake_web.route("GET", "/wd/api.php", api)
 
 
@@ -91,7 +113,7 @@ def test_wikidata_person_accounts(rconfig, fake_web):
     p = wiki.get_person(Fetcher(rconfig), rconfig.research.wikidata_api, "Q42")
     assert p.label == "Jane Pundit" and p.wikipedia_title == "Jane Pundit"
     assert ("x", "JanePundit", "https://x.com/JanePundit") in p.accounts
-    assert not any(h == "OldJane" for _, h, _ in p.accounts)             # deprecated skipped
+    assert not any(h == "OldJane" for _, h, _ in p.accounts)  # deprecated skipped
     assert ("youtube", "UC" + "a" * 22, "https://www.youtube.com/channel/UC" + "a" * 22) in p.accounts
     assert ("website", "https://jane.example", "https://jane.example") in p.accounts
 
@@ -100,20 +122,33 @@ def test_discover_by_handle_then_by_name(rconfig, fake_web):
     wikidata_routes(fake_web)
     by_handle = discover(Fetcher(rconfig), rconfig, "whoever", {"x": "JanePundit"})
     assert [(c.record.qid, c.matched_by, c.strong) for c in by_handle.candidates] == [
-        ("Q42", "account", True)]
+        ("Q42", "account", True)
+    ]
     assert not by_handle.searched_by_name
     by_name = discover(Fetcher(rconfig), rconfig, "Jane Pundit")
-    assert [(c.record.qid, c.matched_by, c.strong) for c in by_name.candidates] == [
-        ("Q42", "name", False)]
+    assert [(c.record.qid, c.matched_by, c.strong) for c in by_name.candidates] == [("Q42", "name", False)]
     assert wiki.get_person(Fetcher(rconfig), rconfig.research.wikidata_api, "Q42").is_human
 
 
 def test_collect_wikipedia_sections(ctx, store, person, rconfig, fake_web):
-    fake_web.route("GET", "/w/api.php", json={"query": {"pages": [{
-        "pageid": 1, "title": "Jane Pundit", "pageprops": {"wikibase_item": "Q42"},
-        "revisions": [{"timestamp": "2025-01-02T03:04:05Z"}],
-        "extract": "Jane Pundit is a streamer.\n\n== Political views ==\nShe supports a carbon tax "
-                   "and opposes rent control.\n\n== Personal life ==\nLives somewhere."}]}})
+    fake_web.route(
+        "GET",
+        "/w/api.php",
+        json={
+            "query": {
+                "pages": [
+                    {
+                        "pageid": 1,
+                        "title": "Jane Pundit",
+                        "pageprops": {"wikibase_item": "Q42"},
+                        "revisions": [{"timestamp": "2025-01-02T03:04:05Z"}],
+                        "extract": "Jane Pundit is a streamer.\n\n== Political views ==\nShe supports a carbon tax "
+                        "and opposes rent control.\n\n== Personal life ==\nLives somewhere.",
+                    }
+                ]
+            }
+        },
+    )
     acct = store.add_account(person.id, "wikipedia", "Jane Pundit", status=CONFIRMED)
     stats = wiki.collect_wikipedia(ctx, acct)
     assert stats.new == 1
@@ -134,25 +169,46 @@ def test_collect_wikipedia_missing(ctx, store, person, fake_web):
 
 # ── X ────────────────────────────────────────────────────────────
 
+
 def x_routes(fake_web, pages):
-    fake_web.route("GET", "/2/users/by/username/JanePundit", json={"data": {"id": "99", "username": "JanePundit"}})
+    fake_web.route(
+        "GET", "/2/users/by/username/JanePundit", json={"data": {"id": "99", "username": "JanePundit"}}
+    )
 
     def timeline(req):
         token = req["query"].get("pagination_token")
         return 200, {}, pages[token]
+
     fake_web.route("GET", "/2/users/99/tweets", timeline)
 
 
 def test_collect_x_paginates(ctx, store, person, fake_web, monkeypatch):
     monkeypatch.setenv("X_BEARER_TOKEN", "tok")
-    x_routes(fake_web, {
-        None: {"data": [{"id": "1", "text": "Rent control fails every time.", "created_at": "2024-05-01T10:00:00Z"},
-                        {"id": "2", "text": "@bob no, read the study", "created_at": "2024-05-02T10:00:00Z",
-                         "referenced_tweets": [{"type": "replied_to", "id": "0"}]}],
-               "meta": {"next_token": "p2"}},
-        "p2": {"data": [{"id": "3", "text": "Carbon tax now.", "created_at": "2024-04-01T10:00:00Z"}],
-               "meta": {}},
-    })
+    x_routes(
+        fake_web,
+        {
+            None: {
+                "data": [
+                    {
+                        "id": "1",
+                        "text": "Rent control fails every time.",
+                        "created_at": "2024-05-01T10:00:00Z",
+                    },
+                    {
+                        "id": "2",
+                        "text": "@bob no, read the study",
+                        "created_at": "2024-05-02T10:00:00Z",
+                        "referenced_tweets": [{"type": "replied_to", "id": "0"}],
+                    },
+                ],
+                "meta": {"next_token": "p2"},
+            },
+            "p2": {
+                "data": [{"id": "3", "text": "Carbon tax now.", "created_at": "2024-04-01T10:00:00Z"}],
+                "meta": {},
+            },
+        },
+    )
     acct = store.add_account(person.id, "x", "@JanePundit", status=CONFIRMED)
     stats = social.collect_x(ctx, acct)
     assert stats.new == 3 and not stats.errors
@@ -173,9 +229,16 @@ def test_collect_x_without_token(ctx, store, person, monkeypatch):
 
 def test_collect_x_respects_limit(ctx, store, person, fake_web, monkeypatch):
     monkeypatch.setenv("X_BEARER_TOKEN", "tok")
-    x_routes(fake_web, {None: {"data": [{"id": str(i), "text": f"post {i}"} for i in range(10)],
-                               "meta": {"next_token": "more"}},
-                        "more": {"data": [{"id": "x", "text": "never"}], "meta": {}}})
+    x_routes(
+        fake_web,
+        {
+            None: {
+                "data": [{"id": str(i), "text": f"post {i}"} for i in range(10)],
+                "meta": {"next_token": "more"},
+            },
+            "more": {"data": [{"id": "x", "text": "never"}], "meta": {}},
+        },
+    )
     acct = store.add_account(person.id, "x", "JanePundit", status=CONFIRMED)
     social.collect_x(ctx, acct, limit=10)
     assert len(fake_web.hits("/2/users/99/tweets")) == 1
@@ -183,18 +246,55 @@ def test_collect_x_respects_limit(ctx, store, person, fake_web, monkeypatch):
 
 # ── Reddit ───────────────────────────────────────────────────────
 
+
 def test_collect_reddit(ctx, store, person, fake_web, monkeypatch):
     monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
     monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
     fake_web.route("POST", "/reddit/api/v1/access_token", json={"access_token": "T", "expires_in": 3600})
-    fake_web.route("GET", "/reddit/user/janep/comments", json={"data": {"after": None, "children": [
-        {"kind": "t1", "data": {"name": "t1_a", "body": "Zoning is the real problem.",
-                                "permalink": "/r/x/comments/1/a", "created_utc": 1700000000,
-                                "subreddit": "economics", "link_title": "Housing"}},
-        {"kind": "t1", "data": {"name": "t1_b", "body": "[deleted]", "permalink": "/r/x/b"}}]}})
-    fake_web.route("GET", "/reddit/user/janep/submitted", json={"data": {"after": None, "children": [
-        {"kind": "t3", "data": {"name": "t3_c", "title": "My take on UBI", "selftext": "It works.",
-                                "permalink": "/r/x/comments/2/c", "created_utc": 1700000100}}]}})
+    fake_web.route(
+        "GET",
+        "/reddit/user/janep/comments",
+        json={
+            "data": {
+                "after": None,
+                "children": [
+                    {
+                        "kind": "t1",
+                        "data": {
+                            "name": "t1_a",
+                            "body": "Zoning is the real problem.",
+                            "permalink": "/r/x/comments/1/a",
+                            "created_utc": 1700000000,
+                            "subreddit": "economics",
+                            "link_title": "Housing",
+                        },
+                    },
+                    {"kind": "t1", "data": {"name": "t1_b", "body": "[deleted]", "permalink": "/r/x/b"}},
+                ],
+            }
+        },
+    )
+    fake_web.route(
+        "GET",
+        "/reddit/user/janep/submitted",
+        json={
+            "data": {
+                "after": None,
+                "children": [
+                    {
+                        "kind": "t3",
+                        "data": {
+                            "name": "t3_c",
+                            "title": "My take on UBI",
+                            "selftext": "It works.",
+                            "permalink": "/r/x/comments/2/c",
+                            "created_utc": 1700000100,
+                        },
+                    }
+                ],
+            }
+        },
+    )
     acct = store.add_account(person.id, "reddit", "u/janep", status=CONFIRMED)
     stats = social.collect_reddit(ctx, acct)
     assert stats.new == 2
@@ -256,6 +356,7 @@ def test_search_web_needs_key(ctx, monkeypatch, fake_web):
 
 # ── YouTube ──────────────────────────────────────────────────────
 
+
 def test_parse_vtt_standard_file_with_cue_identifiers():
     lines = youtube.parse_vtt(MANUAL_VTT)
     assert [t for _, _, t in lines] == ["First line.", "Second line,", "still second cue."]
@@ -264,18 +365,27 @@ def test_parse_vtt_standard_file_with_cue_identifiers():
 
 def test_parse_vtt_dedupes_rolling_auto_captions():
     lines = youtube.parse_vtt(AUTO_VTT)
-    assert [t for _, _, t in lines] == ["so today we talk", "about the minimum wage",
-                                        "it should track inflation & rents"]
+    assert [t for _, _, t in lines] == [
+        "so today we talk",
+        "about the minimum wage",
+        "it should track inflation & rents",
+    ]
     assert lines[0][0] == pytest.approx(0.16) and lines[2][0] == pytest.approx(65.12)
 
 
-@pytest.mark.parametrize("handle,url", [
-    ("UC" + "b" * 22, "https://www.youtube.com/channel/UC" + "b" * 22 + "/videos"),
-    ("@jane", "https://www.youtube.com/@jane/videos"),
-    ("jane", "https://www.youtube.com/@jane/videos"),
-    ("https://www.youtube.com/@jane", "https://www.youtube.com/@jane/videos"),
-    ("https://www.twitch.tv/jane/videos?filter=archives", "https://www.twitch.tv/jane/videos?filter=archives"),
-])
+@pytest.mark.parametrize(
+    "handle,url",
+    [
+        ("UC" + "b" * 22, "https://www.youtube.com/channel/UC" + "b" * 22 + "/videos"),
+        ("@jane", "https://www.youtube.com/@jane/videos"),
+        ("jane", "https://www.youtube.com/@jane/videos"),
+        ("https://www.youtube.com/@jane", "https://www.youtube.com/@jane/videos"),
+        (
+            "https://www.twitch.tv/jane/videos?filter=archives",
+            "https://www.twitch.tv/jane/videos?filter=archives",
+        ),
+    ],
+)
 def test_channel_videos_url(handle, url):
     assert youtube.channel_videos_url(handle) == url
 
@@ -292,15 +402,33 @@ class FakeYtDlp:
         if "--flat-playlist" in args:
             prefix = "s" if url.startswith("ytsearch") else "v"
             count = self.videos
-            if "-I" in args:                       # honour "-I 1:N" like yt-dlp
+            if "-I" in args:  # honour "-I 1:N" like yt-dlp
                 count = min(count, int(args[args.index("-I") + 1].split(":")[1]))
-            return json.dumps({"channel_id": "UC" + "a" * 22, "channel": "Jane", "entries": [
-                {"id": f"{prefix}{i}", "title": f"Video {i}",
-                 "channel_id": "UC" + ("a" if prefix == "v" or i == 0 else "z") * 22}
-                for i in range(count)]})
+            twitch = "twitch.tv" in url
+            return json.dumps(
+                {
+                    "channel_id": "UC" + "a" * 22,
+                    "channel": "Jane",
+                    "entries": [
+                        {
+                            "id": f"{'t' if twitch else prefix}{i}",
+                            "title": f"Video {i}",
+                            **({"url": f"https://www.twitch.tv/videos/{i}"} if twitch else {}),
+                            "channel_id": "UC" + ("a" if prefix == "v" or i == 0 else "z") * 22,
+                        }
+                        for i in range(count)
+                    ],
+                }
+            )
         vid = url.rsplit("=", 1)[-1]
-        meta = {"id": vid, "title": f"Title {vid}", "upload_date": "20240102",
-                "channel": "Jane", "channel_id": "UC" + "a" * 22, "duration": 300}
+        meta = {
+            "id": vid,
+            "title": f"Title {vid}",
+            "upload_date": "20240102",
+            "channel": "Jane",
+            "channel_id": "UC" + "a" * 22,
+            "duration": 300,
+        }
         if "--no-simulate" in args and self.vtt is not None:
             out = Path(args[args.index("-o") + 1]).parent
             (out / f"{vid}.en.vtt").write_text(self.vtt)
@@ -316,7 +444,7 @@ def test_collect_channel_captions(ctx, store, person):
     doc = store.documents(person.id)[0]
     assert doc.authorship == SELF_CHANNEL and doc.published_at == "2024-01-02"
     assert doc.url.startswith("https://www.youtube.com/watch?v=v")
-    assert "worse" not in doc.text                             # preferred plain 'en' track
+    assert "worse" not in doc.text  # preferred plain 'en' track
     assert any("-I" in c and "1:2" in c for c in yt.calls)
     chunks = store.chunks_to_analyze(person.id)
     assert chunks[0][0].start_s == pytest.approx(0.16)
@@ -340,24 +468,28 @@ def test_collect_channel_voice_mode(ctx, store, person):
 
 def test_appearances_exclude_own_channel(ctx, store, person):
     voice = lambda url, workdir: [(1.0, 3.0, f"said on {url[-2:]}")]  # noqa: E731
-    stats = youtube.collect_appearances(ctx, '"Jane"', voice, {"UC" + "a" * 22},
-                                        ytdlp=FakeYtDlp(videos=3), limit=3)
+    stats = youtube.collect_appearances(
+        ctx, '"Jane"', voice, {"UC" + "a" * 22}, ytdlp=FakeYtDlp(videos=3), limit=3
+    )
     # s0 is on her own channel → skipped; s1, s2 are other channels
     assert stats.new == 2
 
 
 # ── local ────────────────────────────────────────────────────────
 
+
 def test_collect_transcripts_only_confident_lines_of_that_voice(ctx, store, person, rconfig):
     from kickvoice.transcripts.store import TranscriptStore, Utterance
 
     with TranscriptStore(rconfig.transcripts_db) as ts:
         s = ts.create_session("s1", "https://kick.com/debates")
-        ts.add_utterances([
-            Utterance("s1", 0, 4, "carbon tax is the answer", speaker="Jane", attribution="confident"),
-            Utterance("s1", 5, 6, "maybe", speaker="Jane", attribution="probable"),
-            Utterance("s1", 7, 9, "no it is not", speaker="Bob", attribution="confident"),
-        ])
+        ts.add_utterances(
+            [
+                Utterance("s1", 0, 4, "carbon tax is the answer", speaker="Jane", attribution="confident"),
+                Utterance("s1", 5, 6, "maybe", speaker="Jane", attribution="probable"),
+                Utterance("s1", 7, 9, "no it is not", speaker="Bob", attribution="confident"),
+            ]
+        )
     stats = local.collect_transcripts(ctx, "Jane")
     assert stats.new == 1
     (doc,) = store.documents(person.id)
@@ -367,12 +499,16 @@ def test_collect_transcripts_only_confident_lines_of_that_voice(ctx, store, pers
 
 def test_import_files(ctx, store, person, tmp_path):
     jsonl = tmp_path / "posts.jsonl"
-    jsonl.write_text('{"id": "a", "text": "first post", "date": "2024-01-01"}\n{"text": ""}\n'
-                     '{"text": "second post", "url": "https://e.example/2"}\n')
+    jsonl.write_text(
+        '{"id": "a", "text": "first post", "date": "2024-01-01"}\n{"text": ""}\n'
+        '{"text": "second post", "url": "https://e.example/2"}\n'
+    )
     assert local.import_file(ctx, jsonl).new == 2
     archive = tmp_path / "tweets.js"
-    archive.write_text('window.YTD.tweets.part0 = [{"tweet": {"id_str": "77", '
-                       '"full_text": "archived tweet", "created_at": "Wed Oct 10 20:19:24 +0000 2018"}}]')
+    archive.write_text(
+        'window.YTD.tweets.part0 = [{"tweet": {"id_str": "77", '
+        '"full_text": "archived tweet", "created_at": "Wed Oct 10 20:19:24 +0000 2018"}}]'
+    )
     assert local.import_file(ctx, archive).new == 1
     assert any(d.source == "x" and d.external_id == "77" for d in store.documents(person.id))
     notes = tmp_path / "profile.md"
@@ -383,11 +519,12 @@ def test_import_files(ctx, store, person, tmp_path):
 
 # ── orchestration ────────────────────────────────────────────────
 
+
 def test_collect_uses_only_confirmed_accounts(store, person, rconfig, fake_web, monkeypatch):
     monkeypatch.setenv("X_BEARER_TOKEN", "tok")
     x_routes(fake_web, {None: {"data": [{"id": "1", "text": "hello"}], "meta": {}}})
     store.add_account(person.id, "x", "JanePundit", status=CANDIDATE)
-    assert collect(store, person, rconfig) == {}                    # nothing confirmed yet
+    assert collect(store, person, rconfig) == {}  # nothing confirmed yet
     store.add_account(person.id, "x", "JanePundit", status=CONFIRMED)
     results = collect(store, person, rconfig)
     assert results["x"].new == 1
@@ -422,10 +559,13 @@ def test_voice_transcriber_keeps_confident_lines_and_cleans_up(rconfig, monkeypa
 
         def run(self, max_duration_s=None):
             s = self.transcripts.create_session("vid", "a.wav")
-            self.transcripts.add_utterances([
-                Utterance(s.id, 1, 4, "mine and sure", speaker="Jane", attribution="confident"),
-                Utterance(s.id, 5, 6, "mine but short", speaker="Jane", attribution="probable"),
-                Utterance(s.id, 7, 9, "the host talking", speaker="Host", attribution="confident")])
+            self.transcripts.add_utterances(
+                [
+                    Utterance(s.id, 1, 4, "mine and sure", speaker="Jane", attribution="confident"),
+                    Utterance(s.id, 5, 6, "mine but short", speaker="Jane", attribution="probable"),
+                    Utterance(s.id, 7, 9, "the host talking", speaker="Host", attribution="confident"),
+                ]
+            )
             return s
 
     monkeypatch.setattr(tmod, "TranscriptionPipeline", FakePipeline)

@@ -1,6 +1,11 @@
 """Shared fixtures: isolated config dirs + model-free fakes for the pipeline."""
+
+import json as _json
 import math
 import struct
+import threading as _threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import pytest
@@ -58,16 +63,18 @@ class FakeEncoder(SpeakerEncoder):
         self.noise = noise
         self.rng = np.random.default_rng(seed)
         self.calls = 0
-        self.voices = voices or {}          # freq → custom voiceprint (sound-alikes)
+        self.voices = voices or {}  # freq → custom voiceprint (sound-alikes)
 
     def embed_pcm(self, pcm: bytes) -> np.ndarray:
         self.calls += 1
         x = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
         spec = np.abs(np.fft.rfft(x))
         freq = np.fft.rfftfreq(len(x), 1 / SR)[spec.argmax()]
-        bucket = round(freq / 10) * 10          # tolerate FFT bin jitter
+        bucket = round(freq / 10) * 10  # tolerate FFT bin jitter
         base = self.voices.get(bucket)
-        v = (voice_vector(bucket) if base is None else base) + self.rng.normal(scale=self.noise / math.sqrt(DIM), size=DIM)
+        v = (voice_vector(bucket) if base is None else base) + self.rng.normal(
+            scale=self.noise / math.sqrt(DIM), size=DIM
+        )
         return v / np.linalg.norm(v)
 
 
@@ -84,41 +91,9 @@ class FakeCapture:
         size = int(SR * 2 * chunk_duration_s)
         try:
             for off in range(0, len(self.pcm), size):
-                yield self.pcm[off:off + size]
+                yield self.pcm[off : off + size]
         finally:
             self.closed = True
-
-    def stop(self):
-        pass
-
-
-class PacedCapture(FakeCapture):
-    """
-    Like a live stream: each block is only released when the test calls
-    `release(n)`, so tests can act between blocks (e.g. save a voice mid-stream).
-    """
-
-    def __init__(self, pcm: bytes):
-        super().__init__(pcm)
-        self.gate = __import__("threading").Semaphore(0)
-        self.stopped = False
-        self.blocks_served = 0
-
-    def release(self, n: int = 1):
-        for _ in range(n):
-            self.gate.release()
-
-    def capture_chunks(self, chunk_duration_s=None, chunk_stride_s=None):
-        for chunk in super().capture_chunks(chunk_duration_s, chunk_stride_s):
-            self.gate.acquire()
-            if self.stopped:
-                return
-            self.blocks_served += 1
-            yield chunk
-
-    def stop(self):
-        self.stopped = True
-        self.gate.release()
 
 
 class ScriptedInput:
@@ -148,7 +123,7 @@ class FakeRecognizer:
     def __init__(self, word_s: float = 0.5, hallucinate: bool = False):
         self.word_s = word_s
         self.hallucinate = hallucinate
-        self.calls: list[float] = []          # duration of each audio passed in
+        self.calls: list[float] = []  # duration of each audio passed in
 
     def transcribe(self, audio, sample_rate):
         from kickvoice.transcripts.asr import Word
@@ -156,11 +131,11 @@ class FakeRecognizer:
         self.calls.append(len(audio) / sample_rate)
         frame = int(sample_rate * 0.03)
         n = len(audio) // frame
-        loud = np.sqrt((audio[:n * frame].reshape(n, frame) ** 2).mean(axis=1)) > 0.02
+        loud = np.sqrt((audio[: n * frame].reshape(n, frame) ** 2).mean(axis=1)) > 0.02
         padded = np.concatenate(([False], loud, [False]))
         edges = np.flatnonzero(padded[1:] != padded[:-1])
         words, prev_end = [], 0.0
-        for a, b in zip(edges[::2], edges[1::2]):
+        for a, b in zip(edges[::2], edges[1::2], strict=True):
             start, end = a * 0.03, b * 0.03
             if self.hallucinate and start - prev_end > 0.5:
                 mid = (prev_end + start) / 2
@@ -168,7 +143,7 @@ class FakeRecognizer:
             t = start
             while t < end - 0.05:
                 w_end = min(t + self.word_s, end)
-                seg = audio[int(t * sample_rate):int(w_end * sample_rate)]
+                seg = audio[int(t * sample_rate) : int(w_end * sample_rate)]
                 spec = np.abs(np.fft.rfft(seg))
                 freq = round(np.fft.rfftfreq(len(seg), 1 / sample_rate)[spec.argmax()] / 10) * 10
                 words.append(Word(t, w_end, f" w{int(freq)}", 0.9))
@@ -178,11 +153,6 @@ class FakeRecognizer:
 
 
 # ── research fakes ───────────────────────────────────────────────
-
-import json as _json
-import threading as _threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
 
 
 class FakeWeb:
@@ -205,9 +175,13 @@ class FakeWeb:
                 parsed = urlparse(self.path)
                 length = int(self.headers.get("content-length") or 0)
                 body = self.rfile.read(length).decode() if length else ""
-                req = {"method": method, "path": parsed.path,
-                       "query": {k: v[0] for k, v in parse_qs(parsed.query).items()},
-                       "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body}
+                req = {
+                    "method": method,
+                    "path": parsed.path,
+                    "query": {k: v[0] for k, v in parse_qs(parsed.query).items()},
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                    "body": body,
+                }
                 web.requests.append(req)
                 handler = web.routes.get((method, parsed.path))
                 if handler is None:
@@ -289,11 +263,13 @@ class ScriptedLLM:
             text = self.replies.pop(0)
         if not isinstance(text, str):
             text = _json.dumps(text)
-        return LLMReply(text=text, model=self.model, input_tokens=len(prompt) // 4,
-                        output_tokens=len(text) // 4)
+        return LLMReply(
+            text=text, model=self.model, input_tokens=len(prompt) // 4, output_tokens=len(text) // 4
+        )
 
 
 # ── research CLI fixtures (shared by the research test modules) ──
+
 
 @pytest.fixture
 def run(rconfig, tmp_path, monkeypatch):
@@ -313,14 +289,105 @@ def run(rconfig, tmp_path, monkeypatch):
         if expect_ok and result.exit_code != 0:
             raise AssertionError(f"exit {result.exit_code}: {result.output}\n{result.exception!r}")
         return result
+
     return _run
 
 
 @pytest.fixture
 def fake_llm(monkeypatch):
     """Make every command use a scripted model."""
+
     def install(llm):
         import kickvoice.research.llm as llm_mod
+
         monkeypatch.setattr(llm_mod, "make_llm", lambda config: llm)
         return llm
+
     return install
+
+
+# ── agent fixtures ───────────────────────────────────────────────
+
+
+class SlowCapture(FakeCapture):
+    """FakeCapture that yields chunks at a pace, like a live stream, and can be stopped."""
+
+    def __init__(self, pcm: bytes, delay: float = 0.0):
+        super().__init__(pcm)
+        self.delay = delay
+        self.stopped = False
+
+    def capture_chunks(self, chunk_duration_s=None, chunk_stride_s=None):
+        import time
+
+        for chunk in super().capture_chunks(chunk_duration_s, chunk_stride_s):
+            if self.stopped:
+                return
+            time.sleep(self.delay)
+            yield chunk
+
+    def stop(self):
+        self.stopped = True
+
+
+def fake_pipeline_factory(pcm: bytes, delay: float = 0.0, voices: dict | None = None):
+    """A real TranscriptionPipeline over synthetic audio (fake models)."""
+
+    def factory(stream_url, file_path, config, on_utterance, audio_path=None):
+        from kickvoice.audio.vad import EnergyVAD
+        from kickvoice.pipelines.transcribe import TranscriptionPipeline
+
+        return TranscriptionPipeline(
+            stream_url=stream_url or file_path,
+            config=config,
+            capture=SlowCapture(pcm, delay),
+            vad=EnergyVAD(config.audio),
+            encoder=FakeEncoder(voices=voices),
+            recognizer=FakeRecognizer(),
+            on_utterance=on_utterance,
+            out=lambda _m: None,
+            audio_path=audio_path,
+        )
+
+    return factory
+
+
+# ── agent-runtime fixtures ───────────────────────────────────────
+
+
+class ScriptedToolLLM:
+    """
+    Tool-calling model stand-in. `script(system, messages, tool_names)` returns
+    (text, [(tool_name, arguments), ...]); an empty call list ends the episode.
+    """
+
+    def __init__(self, script):
+        self.script = script
+        self.calls = []
+
+    def respond(self, system, messages, tools, model, max_tokens=1500):
+        from kickvoice.agent.toolcalling import AssistantTurn, ToolCall
+
+        names = [t.name for t in tools]
+        self.calls.append({"system": system, "messages": list(messages), "tools": names, "model": model})
+        text, calls = self.script(system, messages, names)
+        return AssistantTurn(
+            text=text,
+            model=model,
+            input_tokens=120,
+            output_tokens=30,
+            stop_reason="tool_use" if calls else "end_turn",
+            tool_calls=[ToolCall(f"call_{len(self.calls)}_{i}", n, a) for i, (n, a) in enumerate(calls)],
+        )
+
+
+def last_result(messages, tool):
+    """Parsed JSON of the most recent result of `tool` in an episode's messages."""
+    for m in reversed(messages):
+        if m["role"] == "tool" and m["name"] == tool:
+            return _json.loads(m["content"]) if not m.get("is_error") else {"error": m["content"]}
+    return None
+
+
+def episode_brief(messages):
+    return messages[0]["text"]

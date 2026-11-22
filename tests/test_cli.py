@@ -1,4 +1,5 @@
 """CLI wiring: argument parsing, dispatch, error handling and exit codes."""
+
 import json
 
 import numpy as np
@@ -22,9 +23,9 @@ def run(config, tmp_path):
     def _run(*args, input=None, expect_ok=True):
         result = runner.invoke(cli, ["--config", str(cfg_path), *args], input=input, obj={})
         if expect_ok and result.exit_code != 0:
-            raise AssertionError(
-                f"exit {result.exit_code}: {result.output}\n{result.exception!r}")
+            raise AssertionError(f"exit {result.exit_code}: {result.output}\n{result.exception!r}")
         return result
+
     return _run
 
 
@@ -45,15 +46,16 @@ def test_version(run):
 
 def test_profiles_empty_then_populated(run, config):
     assert "No enrolled speakers" in run("profiles", "list").output
-    ProfileStore(config).add_profile("xQc", unit(1), n_segments=7, speech_seconds=125,
-                                     source_urls=["https://youtu.be/a"])
+    ProfileStore(config).add_profile(
+        "xQc", unit(1), n_segments=7, speech_seconds=125, source_urls=["https://youtu.be/a"]
+    )
     out = run("profiles", "list").output
     assert "xQc" in out and "2m 05s" in out
 
 
 def test_profiles_info_and_missing(run, config):
     ProfileStore(config).add_profile("xQc", unit(1), notes="hi", speech_seconds=60)
-    out = run("profiles", "info", "xqc").output      # case-insensitive lookup
+    out = run("profiles", "info", "xqc").output  # case-insensitive lookup
     assert "Speaker: xQc" in out and "hi" in out
     missing = run("profiles", "info", "nobody", expect_ok=False)
     assert missing.exit_code == 1 and "not found" in missing.output
@@ -85,16 +87,22 @@ def test_profiles_export_import_roundtrip(run, config, tmp_path):
     config.save(tmp_path / "config.json")
     assert "Added: Amy, Bob" in run("profiles", "import", str(pack)).output
     assert "Skipped" in run("profiles", "import", str(pack)).output
-    assert "Merged: Amy, Bob" in run(
-        "profiles", "import", str(pack), "--on-conflict", "merge").output
+    assert "Merged: Amy, Bob" in run("profiles", "import", str(pack), "--on-conflict", "merge").output
 
 
 def test_profiles_import_rejects_foreign_pack(run, config, tmp_path):
     pack = tmp_path / "p.json"
-    pack.write_text(json.dumps({
-        "format": "kickvoice-profile-pack", "version": 1,
-        "embedding_model": "some/other-model", "embedding_dim": 192, "profiles": [],
-    }))
+    pack.write_text(
+        json.dumps(
+            {
+                "format": "kickvoice-profile-pack",
+                "version": 1,
+                "embedding_model": "some/other-model",
+                "embedding_dim": 192,
+                "profiles": [],
+            }
+        )
+    )
     result = run("profiles", "import", str(pack), expect_ok=False)
     assert result.exit_code == 1 and "different models" in result.output
 
@@ -148,8 +156,9 @@ def test_extract_profiles_runs_pipeline_and_defers_review(run, config, tmp_path,
     monkeypatch.setattr(extract_mod, "SpeakerEncoder", lambda config=None: FakeEncoder())
     monkeypatch.setattr(extract_mod, "get_vad", lambda **kw: EnergyVAD(config.audio))
 
-    out = run("extract-profiles", "--file", str(audio),
-              "--min-speech", "8", "--no-review").output
+    out = run(
+        "extract-profiles", "--file", str(audio), "--min-speech", "8", "--no-review", "--no-agent"
+    ).output
     assert "Found 2 speaker(s)" in out and "Review later with" in out
 
     sessions = run("review", "--list").output
@@ -172,7 +181,7 @@ def test_monitor_without_profiles_explains(run, config, tmp_path, monkeypatch):
     write_wav(audio, tone(220, 3), SR)
     monkeypatch.setattr(monitor_mod, "SpeakerEncoder", lambda config=None: FakeEncoder())
     monkeypatch.setattr(monitor_mod, "get_vad", lambda **kw: EnergyVAD(config.audio))
-    out = run("monitor", "--file", str(audio)).output
+    out = run("monitor", "--file", str(audio), "--no-agent").output
     assert "No speaker profiles enrolled" in out and "extract-profiles" in out
 
 
@@ -186,12 +195,13 @@ def test_monitor_detects_enrolled_speaker(run, config, tmp_path, monkeypatch):
     monkeypatch.setattr(monitor_mod, "SpeakerEncoder", lambda config=None: FakeEncoder())
     monkeypatch.setattr(monitor_mod, "get_vad", lambda **kw: EnergyVAD(config.audio))
 
-    out = run("monitor", "--file", str(audio)).output
+    out = run("monitor", "--file", str(audio), "--no-agent").output
     assert "Host detected" in out and "Unknown speaker" in out
     assert "Match rate" in out
 
 
 # ── backwards compatibility with the pre-Click flags ─────────────
+
 
 def test_old_style_name_flags_still_work(run, config, tmp_path, monkeypatch):
     import kickvoice.pipelines.enroll as enroll_mod
@@ -202,8 +212,7 @@ def test_old_style_name_flags_still_work(run, config, tmp_path, monkeypatch):
     monkeypatch.setattr(enroll_mod, "get_vad", lambda **kw: EnergyVAD(config.audio))
 
     # old: enroll --name X --file Y
-    assert "Enrolled 'Streamer'" in run(
-        "enroll", "--name", "Streamer", "--file", str(clip)).output
+    assert "Enrolled 'Streamer'" in run("enroll", "--name", "Streamer", "--file", str(clip)).output
     assert "Speaker: Streamer" in run("profiles", "info", "--name", "Streamer").output
     assert "Removed" in run("profiles", "remove", "--name", "Streamer", "--yes").output
 
@@ -236,6 +245,7 @@ def test_name_given_twice_is_rejected(run):
 
 
 # ── transcribe / transcripts ─────────────────────────────────────
+
 
 @pytest.fixture
 def fake_transcription(config, monkeypatch):
@@ -270,7 +280,7 @@ def test_transcribe_prints_attributed_lines(transcribed):
 def test_transcripts_list_show_speakers(run, transcribed):
     listing = run("transcripts", "list").output
     assert "vod" in listing and "Host" in listing
-    session = [l.split()[0] for l in listing.splitlines() if "vod" in l][0]
+    session = [line.split()[0] for line in listing.splitlines() if "vod" in line][0]
 
     shown = run("transcripts", "show", session).output
     # after the whole-session check, the unmatched voice has a group number
@@ -281,26 +291,25 @@ def test_transcripts_list_show_speakers(run, transcribed):
     assert "w550" not in confident
 
     speakers = run("transcripts", "speakers").output
-    assert "Host" in speakers and "(unknown)" in speakers      # summary pools unknowns
+    assert "Host" in speakers and "(unknown)" in speakers  # summary pools unknowns
 
 
 def test_transcripts_search(run, transcribed):
     out = run("transcripts", "search", "w220").output
     assert "Host (confident)" in out and "2 match(es)" in out
-    assert "No matches" in run("transcripts", "search", "w550").output   # unknown hidden
+    assert "No matches" in run("transcripts", "search", "w550").output  # unknown hidden
     assert "w550" in run("transcripts", "search", "w550", "--min-attribution", "unknown").output
 
 
 def test_transcripts_export_jsonl_and_txt(run, transcribed, tmp_path):
     jsonl = tmp_path / "out.jsonl"
     assert "Exported 3" in run("transcripts", "export", "--out", str(jsonl)).output
-    rows = [json.loads(l) for l in jsonl.read_text().splitlines()]
+    rows = [json.loads(line) for line in jsonl.read_text().splitlines()]
     assert [r["speaker"] for r in rows] == ["Host", None, "Host"]
     assert {"said_at", "source", "attribution", "start_s", "text"} <= set(rows[0])
 
     txt = tmp_path / "host.txt"
-    run("transcripts", "export", "--out", str(txt), "--speaker", "Host",
-        "--min-attribution", "confident")
+    run("transcripts", "export", "--out", str(txt), "--speaker", "Host", "--min-attribution", "confident")
     assert txt.read_text().count("Host:") == 2
 
 
@@ -311,10 +320,13 @@ def test_transcripts_reattribute_after_enrolling(run, config, transcribed, tmp_p
     assert "1 line(s) changed" in run("transcripts", "reattribute").output
     out = tmp_path / "after.jsonl"
     run("transcripts", "export", "--out", str(out))
-    rows = [json.loads(l) for l in out.read_text().splitlines()]
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert [(r["speaker"], r["attribution"]) for r in rows] == [
-        ("Host", "confident"), ("Guest", "confident"), ("Host", "confident")]
-    assert "1 line(s) changed" not in run("transcripts", "reattribute").output   # idempotent
+        ("Host", "confident"),
+        ("Guest", "confident"),
+        ("Host", "confident"),
+    ]
+    assert "1 line(s) changed" not in run("transcripts", "reattribute").output  # idempotent
 
 
 def test_transcripts_reattribute_refuses_other_model(run, config, tmp_path, transcribed):
@@ -325,8 +337,7 @@ def test_transcripts_reattribute_refuses_other_model(run, config, tmp_path, tran
 
 
 def test_transcripts_delete(run, transcribed):
-    session = [l.split()[0] for l in run("transcripts", "list").output.splitlines()
-               if "vod" in l][0]
+    session = [line.split()[0] for line in run("transcripts", "list").output.splitlines() if "vod" in line][0]
     assert "Cancelled" in run("transcripts", "delete", session, input="n\n").output
     assert "Deleted" in run("transcripts", "delete", session, "-y").output
     assert "No transcripts yet" in run("transcripts", "list").output
@@ -352,8 +363,21 @@ def test_transcribe_options_reach_config(run, config, tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "TranscriptionPipeline", Capturing)
     audio = tmp_path / "a.wav"
     write_wav(audio, tone(220, 1), SR)
-    run("transcribe", "--file", str(audio), "--model", "medium", "--language", "en",
-        "--device", "cuda", "--drop-unknown", "--quiet", "--duration", "60")
+    run(
+        "transcribe",
+        "--file",
+        str(audio),
+        "--model",
+        "medium",
+        "--language",
+        "en",
+        "--device",
+        "cuda",
+        "--drop-unknown",
+        "--quiet",
+        "--duration",
+        "60",
+    )
     assert seen["asr_model"] == "medium" and seen["language"] == "en"
     assert seen["asr_device"] == "cuda" and seen["asr_compute_type"] == "float16"
     assert seen["keep_unattributed"] is False and seen["quiet"] and seen["duration"] == 60

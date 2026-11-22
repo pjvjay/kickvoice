@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 
 from conftest import FakeCapture, FakeEncoder, ScriptedInput, conversation, voice_vector
+from kickvoice.audio.vad import EnergyVAD
 from kickvoice.pipelines.extract import ProfileExtractor
 from kickvoice.pipelines.review import Reviewer
 from kickvoice.pipelines.session import CREATED, MERGED, PENDING, SKIPPED, ExtractionSession
-from kickvoice.audio.vad import EnergyVAD
 from kickvoice.speakers.profiles import ProfileStore
 
 HOST, GUEST = 220, 550
@@ -14,18 +14,22 @@ HOST, GUEST = 220, 550
 @pytest.fixture
 def session(config):
     pcm = conversation([(HOST, 6), (GUEST, 5), (HOST, 6), (GUEST, 5), (HOST, 6)])
-    ex = ProfileExtractor(stream_url="https://kick.com/SomeChannel", config=config,
-                          capture=FakeCapture(pcm), vad=EnergyVAD(config.audio),
-                          encoder=FakeEncoder(), store=ProfileStore(config),
-                          out=lambda _: None)
+    ex = ProfileExtractor(
+        stream_url="https://kick.com/SomeChannel",
+        config=config,
+        capture=FakeCapture(pcm),
+        vad=EnergyVAD(config.audio),
+        encoder=FakeEncoder(),
+        store=ProfileStore(config),
+        out=lambda _: None,
+    )
     return ex.run(max_duration_s=0)
 
 
 def review(session, config, answers, store=None, player=None):
     store = store or ProfileStore(config)
     inp, out = ScriptedInput(answers), []
-    summary = Reviewer(session, config, store=store, input_fn=inp,
-                       out=out.append, player=player).run()
+    summary = Reviewer(session, config, store=store, input_fn=inp, out=out.append, player=player).run()
     return summary, store, inp, "\n".join(out)
 
 
@@ -68,8 +72,7 @@ def test_eof_is_treated_as_quit(config, session):
 
 def test_accept_match_merges_into_known_profile(config, session):
     store = ProfileStore(config)
-    store.add_profile("TheHost", voice_vector(HOST) * 0.9 + voice_vector(999) * 0.1,
-                      speech_seconds=100)
+    store.add_profile("TheHost", voice_vector(HOST) * 0.9 + voice_vector(999) * 0.1, speech_seconds=100)
     summary, store, _, out = review(session, config, ["a", "s"], store=store)
     assert "Matches known profile: TheHost" in out
     assert summary.merged == ["TheHost"]
@@ -82,9 +85,15 @@ def test_new_profile_is_matched_for_later_candidates(config, session):
     makes the second show up as a match."""
     dup = session.candidates[0]
     np.save(session.path / "dup.npy", session.embedding(dup))
-    session.add_candidate(embedding=session.embedding(dup), sample_pcm=b"\x00\x00" * 10,
-                          sample_rate=16000, speech_seconds=20, n_windows=10,
-                          first_heard_s=30, cohesion=0.9)
+    session.add_candidate(
+        embedding=session.embedding(dup),
+        sample_pcm=b"\x00\x00" * 10,
+        sample_rate=16000,
+        speech_seconds=20,
+        n_windows=10,
+        first_heard_s=30,
+        cohesion=0.9,
+    )
     summary, store, _, out = review(session, config, ["n", "Host", "s", "a"])
     assert "Speaker 3 of 3" in out
     assert out.count("Matches known profile: Host") == 1
@@ -102,10 +111,14 @@ def test_create_with_existing_name_offers_merge(config, session):
 def test_manual_merge_and_bad_names(config, session):
     store = ProfileStore(config)
     store.add_profile("Alt", voice_vector(777), speech_seconds=50)
-    answers = ["m", "nobody",          # unknown → back to menu
-               "x",                    # unrecognised
-               "m", "alt",             # merge (case-insensitive)
-               "s"]
+    answers = [
+        "m",
+        "nobody",  # unknown → back to menu
+        "x",  # unrecognised
+        "m",
+        "alt",  # merge (case-insensitive)
+        "s",
+    ]
     summary, store, _, out = review(session, config, answers, store=store)
     assert "No profile named 'nobody'" in out and "Unrecognised" in out
     assert summary.merged == ["Alt"]

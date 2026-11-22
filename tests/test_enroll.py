@@ -1,4 +1,5 @@
 """Enrollment pipeline, including the 'downloads every video twice' regression."""
+
 from pathlib import Path
 
 import numpy as np
@@ -47,8 +48,8 @@ def test_each_url_is_downloaded_exactly_once(config):
 
     enroller.enroll("Streamer", urls)
 
-    assert [url for url, _ in downloader.calls] == urls       # once each, in order
-    assert len({d for _, d in downloader.calls}) == 2         # separate work dirs
+    assert [url for url, _ in downloader.calls] == urls  # once each, in order
+    assert len({d for _, d in downloader.calls}) == 2  # separate work dirs
 
 
 def test_enroll_from_youtube_wrapper_downloads_once(config):
@@ -64,12 +65,16 @@ def test_enroll_mixed_sources_builds_one_profile(config, tmp_path):
     enroller = make_enroller(config, downloader)
 
     seen = []
-    result = enroller.enroll("Streamer", [clip, "https://youtu.be/AAA"],
-                             notes="two sources", on_progress=lambda s, i, n: seen.append((i, n)))
+    result = enroller.enroll(
+        "Streamer",
+        [clip, "https://youtu.be/AAA"],
+        notes="two sources",
+        on_progress=lambda s, i, n: seen.append((i, n)),
+    )
 
-    assert len(downloader.calls) == 1              # the local file is not downloaded
+    assert len(downloader.calls) == 1  # the local file is not downloaded
     assert seen == [(1, 2), (2, 2)]
-    assert result.n_segments == 3                  # 2 from the file + 1 from the URL
+    assert result.n_segments == 3  # 2 from the file + 1 from the URL
     assert result.speech_seconds > 10
 
     stored = ProfileStore(config).get_profile("Streamer")
@@ -95,12 +100,17 @@ def test_enroll_without_sources_or_speech(config, tmp_path):
 def test_temp_downloads_are_cleaned_up(config):
     downloader = FakeDownloader(tone(VOICE, 6))
     make_enroller(config, downloader).enroll("S", ["https://youtu.be/AAA"])
-    assert not downloader.calls[0][1].exists()     # temp dir removed after enrolling
+    assert not downloader.calls[0][1].exists()  # temp dir removed after enrolling
 
 
-@pytest.mark.parametrize("source,expected", [
-    ("https://youtu.be/AAA", True), ("http://x.com/a", True),
-    ("/tmp/clip.wav", False), ("clip.wav", False),
-])
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("https://youtu.be/AAA", True),
+        ("http://x.com/a", True),
+        ("/tmp/clip.wav", False),
+        ("clip.wav", False),
+    ],
+)
 def test_is_url(source, expected):
     assert is_url(source) is expected

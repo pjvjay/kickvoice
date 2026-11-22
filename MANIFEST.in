@@ -1,0 +1,5 @@
+include README.md LICENSE CHANGELOG.md CONTRIBUTING.md
+include run.sh setup.sh Makefile
+recursive-include tests *.py
+include src/kickvoice/py.typed
+global-exclude __pycache__ *.py[cod] .coverage*

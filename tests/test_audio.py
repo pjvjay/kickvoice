@@ -1,29 +1,35 @@
 """Audio layer: chunking, ffmpeg decoding, VAD."""
+
 import numpy as np
 import pytest
 
 from conftest import SR, conversation, silence, tone
 from kickvoice.audio.capture import FileCapture, open_capture, rechunk
 from kickvoice.audio.ffmpeg import (
-    AudioError, decode_to_pcm, pcm_duration_s, pcm_to_numpy, seconds_to_bytes, write_wav,
+    AudioError,
+    decode_to_pcm,
+    pcm_duration_s,
+    pcm_to_numpy,
+    seconds_to_bytes,
+    write_wav,
 )
 from kickvoice.audio.vad import EnergyVAD
 
 
 def test_rechunk_non_overlapping():
     data = bytes(range(100))
-    assert list(rechunk([data], 10, 10)) == [data[i:i + 10] for i in range(0, 100, 10)]
+    assert list(rechunk([data], 10, 10)) == [data[i : i + 10] for i in range(0, 100, 10)]
 
 
 def test_rechunk_overlapping_windows():
     chunks = list(rechunk([bytes(range(100))], 20, 10))
-    assert len(chunks) == 9                      # 0-20, 10-30, ... 80-100
+    assert len(chunks) == 9  # 0-20, 10-30, ... 80-100
     assert chunks[1] == bytes(range(10, 30))
 
 
 def test_rechunk_reassembles_small_blocks():
     """Blocks smaller than a chunk are buffered until a full chunk exists."""
-    blocks = [bytes([i]) * 3 for i in range(10)]     # 30 bytes total
+    blocks = [bytes([i]) * 3 for i in range(10)]  # 30 bytes total
     joined = b"".join(blocks)
     assert list(rechunk(blocks, 10, 10)) == [joined[0:10], joined[10:20], joined[20:30]]
 
@@ -42,7 +48,7 @@ def test_seconds_to_bytes_is_sample_aligned(config):
 def test_pcm_numpy_roundtrip():
     samples = pcm_to_numpy(tone(440, 0.1))
     assert len(samples) == int(SR * 0.1)
-    assert samples.dtype == np.float32 and -1.0 <= samples.min() and samples.max() <= 1.0
+    assert samples.dtype == np.float32 and samples.min() >= -1.0 and samples.max() <= 1.0
 
 
 def test_decode_real_file_through_ffmpeg(config, tmp_path):
@@ -85,7 +91,7 @@ def test_open_capture_requires_exactly_one_source(config, tmp_path):
 def test_energy_vad_finds_speech_and_skips_silence(config):
     pcm = silence(1.0) + tone(300, 3.0) + silence(1.0) + tone(300, 0.4) + silence(1.0)
     segments = EnergyVAD(config.audio).detect_speech(pcm)
-    assert len(segments) == 1                      # the 0.4s blip is too short
+    assert len(segments) == 1  # the 0.4s blip is too short
     seg = segments[0]
     assert seg.duration_s == pytest.approx(3.0, abs=0.2)
     assert seg.start_sample == pytest.approx(SR, abs=SR * 0.1)

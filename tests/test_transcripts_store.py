@@ -14,23 +14,40 @@ def store(tmp_path):
 
 
 def utt(session, start, speaker, level, text, emb=None):
-    return Utterance(session_id=session, start_s=start, end_s=start + 3, text=text,
-                     speaker=speaker, similarity=0.8, attribution=level,
-                     asr_confidence=0.9, embedding=emb)
+    return Utterance(
+        session_id=session,
+        start_s=start,
+        end_s=start + 3,
+        text=text,
+        speaker=speaker,
+        similarity=0.8,
+        attribution=level,
+        asr_confidence=0.9,
+        embedding=emb,
+    )
 
 
 @pytest.fixture
 def populated(store):
-    s1 = store.create_session("20250101-120000_chan", "https://kick.com/chan",
-                              asr_model="asr", embedding_model="ecapa")
+    s1 = store.create_session(
+        "20250101-120000_chan", "https://kick.com/chan", asr_model="asr", embedding_model="ecapa"
+    )
     s2 = store.create_session("20250102-120000_chan", "https://kick.com/chan")
-    store.add_utterances([
-        utt(s1.id, 0, "Host", CONFIDENT, "I don't think gambling sponsors are fine",
-            emb=np.arange(4, dtype=float)),
-        utt(s1.id, 5, "Guest", PROBABLE, "gambling is just entertainment"),
-        utt(s1.id, 9, None, UNKNOWN, "chat is going crazy"),
-        utt(s2.id, 0, "Host", CONFIDENT, "today we play chess"),
-    ])
+    store.add_utterances(
+        [
+            utt(
+                s1.id,
+                0,
+                "Host",
+                CONFIDENT,
+                "I don't think gambling sponsors are fine",
+                emb=np.arange(4, dtype=float),
+            ),
+            utt(s1.id, 5, "Guest", PROBABLE, "gambling is just entertainment"),
+            utt(s1.id, 9, None, UNKNOWN, "chat is going crazy"),
+            utt(s2.id, 0, "Host", CONFIDENT, "today we play chess"),
+        ]
+    )
     return store, s1, s2
 
 
@@ -45,7 +62,7 @@ def test_roundtrip_and_order(populated):
 
 def test_filters(populated):
     store, s1, _ = populated
-    assert len(store.utterances(speaker="host")) == 2                    # case-insensitive
+    assert len(store.utterances(speaker="host")) == 2  # case-insensitive
     assert len(store.utterances(s1.id, min_attribution=CONFIDENT)) == 1
     assert len(store.utterances(s1.id, min_attribution=PROBABLE)) == 2
     assert len(store.utterances(s1.id, min_attribution=UNKNOWN)) == 3
@@ -62,7 +79,7 @@ def test_search(populated):
     # punctuation / FTS operators in user input must not break the query
     assert len(store.search("don't")) == 1
     assert [u.text for u in store.search('chess"')] == ["today we play chess"]
-    assert store.search("chess AND OR (") == []          # operators are literal terms
+    assert store.search("chess AND OR (") == []  # operators are literal terms
     assert store.search("nonexistentword") == []
 
 
@@ -77,11 +94,11 @@ def test_search_without_fts(tmp_path, monkeypatch):
 def test_sessions_listing_and_lookup(populated):
     store, s1, s2 = populated
     listed = store.list_sessions()
-    assert [s.id for s in listed] == [s2.id, s1.id]                      # newest first
+    assert [s.id for s in listed] == [s2.id, s1.id]  # newest first
     assert listed[1].n_utterances == 3 and listed[1].speakers == ["Guest", "Host"]
     assert store.get_session(s1.id).asr_model == "asr"
-    assert store.get_session("20250101").id == s1.id                     # unique prefix
-    assert store.get_session("2025") is None                             # ambiguous
+    assert store.get_session("20250101").id == s1.id  # unique prefix
+    assert store.get_session("2025") is None  # ambiguous
     assert store.get_session("nope") is None
 
 
@@ -124,7 +141,7 @@ def test_update_and_delete_utterances(populated):
     assert after.similarity == pytest.approx(0.91)
     store.delete_utterances([third.id])
     assert [u.id for u in store.utterances(s1.id)] == [first.id, second.id]
-    assert store.search("crazy") == []                  # search index kept in sync
+    assert store.search("crazy") == []  # search index kept in sync
 
 
 def test_persists_across_connections(tmp_path):
@@ -140,8 +157,7 @@ def test_persists_across_connections(tmp_path):
 def test_to_dict_includes_wall_clock(store):
     from datetime import datetime
 
-    s = store.create_session("x", "https://kick.com/chan",
-                             started_at=datetime(2025, 1, 1, 20, 0, 0))
+    s = store.create_session("x", "https://kick.com/chan", started_at=datetime(2025, 1, 1, 20, 0, 0))
     store.add_utterances([utt(s.id, 65, "Guest", PROBABLE, "hi")])
     d = store.utterances(s.id)[0].to_dict(store.get_session(s.id))
     assert d["speaker"] == "Guest" and d["source"] == "https://kick.com/chan"
