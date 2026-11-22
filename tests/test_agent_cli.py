@@ -131,7 +131,7 @@ live.default_pipeline_factory = fake_pipeline_factory(conversation({turns!r}), d
 """
 
 
-def run_cli(config, tmp_path, turns, *args):
+def run_cli(config, tmp_path, turns, *args, stdin=subprocess.DEVNULL, timeout=180):
     """`python -m kickvoice …` as a user would run it (its MCP server is another process)."""
     hook = tmp_path / "hook"
     hook.mkdir()
@@ -143,9 +143,9 @@ def run_cli(config, tmp_path, turns, *args):
         [sys.executable, "-m", "kickvoice", "--config", str(cfg), *args],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=timeout,
         env=env,
-        stdin=subprocess.DEVNULL,
+        stdin=stdin,
     )
     runs = sorted((Path(config.data_dir) / "runs").iterdir())
     return proc, runs[-1]
@@ -219,6 +219,48 @@ def test_monitor_command_end_to_end(config, tmp_path):
         e["kind"] for e in trace
     }
     assert "start_live_session" in {e["tool"] for e in trace if e["kind"] == "tool_call"}
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
+def test_monitor_in_a_terminal_exits_on_its_own(config, tmp_path):
+    """
+    Regression: run from a terminal, `monitor` printed its report and then
+    stayed alive until Enter was pressed (a thread was still reading stdin).
+    """
+    import pty
+
+    fast(config)
+    ProfileStore(config).add_profile("Jane", voice_vector(220), speech_seconds=300)
+    ProfileStore(config).add_profile("Me", voice_vector(550), speech_seconds=300)
+    keyboard, terminal = pty.openpty()  # stdin is a terminal, and nobody types
+    try:
+        proc, run_dir = run_cli(
+            config,
+            tmp_path,
+            [(220, 5), (550, 4)],
+            "monitor",
+            "--stream",
+            URL,
+            "--opponent",
+            "Jane",
+            "--me",
+            "Me",
+            "--policy",
+            "rules",
+            stdin=terminal,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired as hung:
+        seen = hung.stdout or b""  # bytes on POSIX even in text mode
+        seen = seen.decode(errors="replace") if isinstance(seen, bytes) else seen
+        pytest.fail(f"monitor was still running after 90 s (report already printed: {'Report:' in seen})")
+    finally:
+        os.close(terminal)
+        os.close(keyboard)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Type a reply's number to copy it" in proc.stdout  # it did treat stdin as a terminal
+    assert "Report:" in proc.stdout and json.loads((run_dir / "report.json").read_text())["ok"]
 
 
 CRASHING_SERVER = """

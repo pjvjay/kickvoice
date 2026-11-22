@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format follows
   "Intel Macs" in the README, including the caveat and how to opt out).
 - When the MCP server process dies, the terminal now shows the end of its log
   instead of only `MCPError: Connection closed`.
+- `monitor` stayed alive after printing its report until Enter was pressed: a
+  thread was left blocked reading the terminal. Input is now read in short
+  polls, so the process exits when the run ends (also after Ctrl+C while
+  `extract-profiles` is waiting for an answer).
 
 ## [0.2.0]
 
