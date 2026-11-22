@@ -55,8 +55,8 @@ dev = [
 kickvoice = "kickvoice.cli:main"
 
 [project.urls]
-Documentation = "https://github.com/kickvoice/kickvoice#readme"
-Changelog = "https://github.com/kickvoice/kickvoice/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/pjvjay/kickvoice#readme"
+Changelog = "https://github.com/pjvjay/kickvoice/blob/main/CHANGELOG.md"
 
 [tool.setuptools.dynamic]
 version = { attr = "kickvoice.__version__" }

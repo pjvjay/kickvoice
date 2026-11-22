@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
   `...` could drop a word, so "are … fine" passed as a quote of "are not
   fine". All quote marks are checked now, and a quote must be one unbroken
   passage.
+- The install command in the README and the project URLs in the package
+  metadata pointed at a GitHub repository that does not exist. They now point
+  at this one.
 
 ### Changed
 - `...` no longer joins separate fragments inside a quote; such a reply is

@@ -32,7 +32,7 @@ copilot for Kick.com live streams.**
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # 2. kickvoice with everything (agents, transcription, YouTube):
-pip install "kickvoice[all] @ git+https://github.com/kickvoice/kickvoice"
+pip install "kickvoice[all] @ git+https://github.com/pjvjay/kickvoice"
 # …or from a built wheel:  pip install "kickvoice-0.2.0-py3-none-any.whl[all]"
 
 kickvoice --help
