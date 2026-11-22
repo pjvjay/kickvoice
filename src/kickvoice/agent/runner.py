@@ -104,6 +104,8 @@ def run_agent(
         else:  # unexpected: keep the traceback in the log
             logger.error("Agent run failed", exc_info=error)
             outcome.ok, outcome.error = False, f"{type(error).__name__}: {error}"
+            if service is None and _connection_lost(error):
+                outcome.error = _server_stopped(run_dir.server_log, outcome.error)
         tracer.event("run_error", error=outcome.error)
     _write_outputs(command, outcome, tracer)
     return outcome
@@ -114,6 +116,33 @@ def root_cause(error: BaseException) -> BaseException:
     while isinstance(error, BaseExceptionGroup) and len(error.exceptions) == 1:
         error = error.exceptions[0]
     return error
+
+
+def _connection_lost(error: BaseException) -> bool:
+    """The MCP connection dropped (the server process went away), as opposed to a tool failing."""
+    from mcp import MCPError
+    from mcp_types import CONNECTION_CLOSED
+
+    return isinstance(error, MCPError) and error.code == CONNECTION_CLOSED
+
+
+def _server_stopped(server_log: Path, error: str, tail: int = 2, width: int = 200) -> str:
+    """
+    One line saying the spawned MCP server died, with the end of its log.
+
+    "MCPError: Connection closed" on its own says nothing about why; the
+    reason (a crash in a native library, a missing dependency) is whatever
+    the server last wrote to stderr.
+    """
+    try:
+        lines = server_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    last = [line.strip()[:width] for line in lines if line.strip()][-tail:]
+    message = f"kickvoice's MCP server stopped unexpectedly ({error})"
+    if last:
+        message += ". Its log ends: " + " | ".join(last)
+    return f"{message}. Full log: {server_log}"
 
 
 def _make_agent(command: str, ctx: AgentContext, options: dict):

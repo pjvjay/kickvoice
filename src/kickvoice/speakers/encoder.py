@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from kickvoice._openmp import import_torch
 from kickvoice.audio.ffmpeg import decode_to_pcm, pcm_to_tensor
 from kickvoice.audio.vad import SpeechSegment
 from kickvoice.config import Config
@@ -36,6 +37,7 @@ class SpeakerEncoder:
     def _load_model(self):
         if self._model is not None:
             return
+        import_torch()  # before speechbrain imports it
         from speechbrain.inference.speaker import EncoderClassifier
 
         savedir = Path(self.config.data_dir) / self.emb_cfg.model_savedir
@@ -49,7 +51,7 @@ class SpeakerEncoder:
 
     def embed_pcm(self, pcm_bytes: bytes) -> np.ndarray:
         """Embed raw PCM (16-bit mono at the configured sample rate)."""
-        import torch
+        torch = import_torch()
 
         self._load_model()
         audio = pcm_to_tensor(pcm_bytes).unsqueeze(0)  # [1, n_samples]

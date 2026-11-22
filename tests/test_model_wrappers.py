@@ -134,10 +134,11 @@ def fake_whisper(monkeypatch, fail_load=False):
     calls = {}
 
     class WhisperModel:
-        def __init__(self, size, device, compute_type, download_root):
+        def __init__(self, size, device, compute_type, download_root, cpu_threads=0):
             if fail_load:
                 raise RuntimeError("CUDA driver not found\nmore details")
             calls.update(size=size, device=device, compute_type=compute_type, root=download_root)
+            calls.update(cpu_threads=cpu_threads)
 
         def transcribe(self, audio, **kw):
             calls.update(kw, dtype=str(audio.dtype))
@@ -169,6 +170,21 @@ def test_whisper_recognizer(config, monkeypatch):
     rec.load()  # idempotent
     with pytest.raises(ValueError, match="16kHz"):
         rec.transcribe(np.zeros(10, dtype=np.float32), 8000)
+
+
+def test_whisper_threads_follow_the_openmp_arrangement(config, monkeypatch, caplog):
+    """On Intel Macs, if PyTorch got into the process first, Whisper has to stay on one thread."""
+    import kickvoice.transcripts.asr as asr
+
+    calls = fake_whisper(monkeypatch)
+    monkeypatch.setattr(asr, "whisper_cpu_threads", lambda: None)
+    FasterWhisperRecognizer(config).load()
+    assert calls["cpu_threads"] == 0  # not passed: faster-whisper's own default
+
+    monkeypatch.setattr(asr, "whisper_cpu_threads", lambda: 1)
+    with caplog.at_level("WARNING"):
+        FasterWhisperRecognizer(config).load()
+    assert calls["cpu_threads"] == 1 and "Whisper runs on 1 thread" in caplog.text
 
 
 def test_whisper_load_failure_is_explained(config, monkeypatch):

@@ -221,6 +221,59 @@ def test_monitor_command_end_to_end(config, tmp_path):
     assert "start_live_session" in {e["tool"] for e in trace if e["kind"] == "tool_call"}
 
 
+CRASHING_SERVER = """
+import os, sys
+import kickvoice.agent.live as live
+
+def crash(*_args, **_kwargs):  # what loading the models did on Intel Macs: abort the whole process
+    sys.stderr.write("OMP: Error #15: Initializing libiomp5.dylib, but found libiomp5.dylib already initialized.\\n")
+    sys.stderr.write("OMP: Hint This means that multiple copies of the OpenMP runtime have been linked.\\n")
+    sys.stderr.flush()
+    os._exit(134)
+
+live.default_pipeline_factory = crash
+"""
+
+
+@pytest.mark.slow
+def test_a_dead_mcp_server_is_explained_in_the_terminal(config, tmp_path):
+    """Regression: when the server process died, all the user saw was "MCPError: Connection closed"."""
+    fast(config)
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(CRASHING_SERVER)
+    cfg = tmp_path / "config.json"
+    config.save(cfg)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(hook), os.environ.get("PYTHONPATH", "")])}
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "kickvoice",
+            "--config",
+            str(cfg),
+            "monitor",
+            "--stream",
+            URL,
+            "--policy",
+            "rules",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
+    shown = proc.stdout + proc.stderr
+    assert proc.returncode == 1, shown
+    assert "MCP server stopped unexpectedly" in shown and "Connection closed" in shown
+    assert "OMP: Error #15" in shown and "mcp_server.log" in shown
+    (run_dir,) = (Path(config.data_dir) / "runs").iterdir()
+    assert "OMP: Error #15" in (run_dir / "mcp_server.log").read_text()
+    report = json.loads((run_dir / "report.json").read_text())
+    assert not report["ok"] and "OMP: Error #15" in report["error"]
+
+
 @pytest.mark.slow
 def test_extract_profiles_command_end_to_end(config, tmp_path):
     fast(config)

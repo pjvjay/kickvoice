@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from kickvoice._openmp import import_torch
 from kickvoice.config import AudioConfig
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,7 @@ def pcm_to_numpy(pcm: bytes) -> np.ndarray:
 
 def pcm_to_tensor(pcm: bytes):
     """PCM bytes → 1-D torch float tensor (torch imported lazily)."""
-    import torch
-
-    return torch.from_numpy(pcm_to_numpy(pcm))
+    return import_torch().from_numpy(pcm_to_numpy(pcm))
 
 
 def pcm_duration_s(pcm: bytes, audio_cfg: AudioConfig) -> float:

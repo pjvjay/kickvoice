@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Intel Macs:** `transcribe`, `debate`, and the MCP server behind `monitor`
+  and `extract-profiles` aborted with `OMP: Error #15` once both the voice and
+  the speech model were loaded, unless `KMP_DUPLICATE_LIB_OK=TRUE` was exported
+  by hand, and even then crashed or hung when the voice model was used first.
+  kickvoice now arranges a working setup itself on macOS x86_64: it sets the
+  switch, loads CTranslate2 before PyTorch and keeps PyTorch on one thread (see
+  "Intel Macs" in the README, including the caveat and how to opt out).
+- When the MCP server process dies, the terminal now shows the end of its log
+  instead of only `MCPError: Connection closed`.
+
 ## [0.2.0]
 
 ### Added

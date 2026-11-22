@@ -59,6 +59,54 @@ Afterwards `./run.sh <command>` runs kickvoice inside that environment;
 `kickvoice <command>` works the same once the venv is activated. Non-interactive
 alternatives: `make install`, `make install-gpu`, `make download-models`.
 
+### Intel Macs (macOS x86_64)
+
+Intel Macs are supported. Two things are different there:
+
+- **Python 3.12 and PyTorch 2.2.2.** PyTorch 2.2.2 is the last release with
+  Intel Mac wheels, and it has none for Python 3.13 or later. `./setup.sh` and
+  `make install` pick both for you.
+- **Two OpenMP runtimes in one process.** The Intel Mac wheels of PyTorch and of
+  CTranslate2 (which faster-whisper runs on) each bundle their own copy of
+  Intel's OpenMP runtime, `libiomp5`. As installed, loading both aborts:
+
+  ```
+  OMP: Error #15: Initializing libiomp5.dylib, but found libiomp5.dylib already initialized.
+  ```
+
+  That stopped `transcribe`, `debate`, and the MCP server behind `monitor` and
+  `extract-profiles`, where the terminal only showed `MCPError: Connection
+  closed`.
+
+  kickvoice now sets this up itself. You don't need to export anything,
+  whether you use `./run.sh`, the `kickvoice` command or `python -m kickvoice`:
+
+  1. It sets `KMP_DUPLICATE_LIB_OK=TRUE` in its own processes, including the
+     MCP server it spawns, so the second runtime is allowed to start.
+  2. It loads CTranslate2 before PyTorch and keeps PyTorch on one thread. With
+     both runtimes loaded, the library that was loaded second crashes or hangs
+     as soon as it uses several threads, and works on one. Whisper is the
+     heavy model, so it keeps its threads; the voice models (ECAPA, Silero
+     VAD) are light, and importing silero-vad already put PyTorch on one
+     thread, so in practice this costs nothing.
+
+  All of this happens only on macOS x86_64 with faster-whisper installed. The
+  details and the measurements behind them are in `src/kickvoice/_openmp.py`.
+
+  What to know:
+  - Intel documents `KMP_DUPLICATE_LIB_OK` as an unsupported workaround and
+    does not rule out crashes or wrong results. The arrangement above was
+    tested on an Intel Mac with torch 2.2.2 and ctranslate2 4.9.0
+    (`tests/test_openmp.py` runs both libraries for real on such a machine);
+    other versions may behave differently.
+  - If you would rather have the abort, export `KMP_DUPLICATE_LIB_OK=FALSE`
+    before running kickvoice. A value you set yourself is never overridden.
+  - If your own program imports `torch` before `kickvoice`, the roles swap:
+    PyTorch keeps its threads and Whisper runs on one, which is slower. A
+    warning is logged.
+  - If the MCP server stops for any other reason, the terminal now shows the
+    end of its log; the whole log is `mcp_server.log` in the run folder.
+
 ## The two agent commands
 
 Both commands spawn an AI agent with a specific goal. The agent works only

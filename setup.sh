@@ -120,6 +120,13 @@ if [ "$IS_INTEL_MAC" = true ]; then
     info "Installing PyTorch 2.2.2 (last Intel Mac release)..."
     pip install "torch==2.2.2" "torchaudio==2.2.2" --quiet
     ok "PyTorch 2.2.2 installed (Intel Mac)"
+    # On Intel Macs the PyTorch and CTranslate2 (faster-whisper) wheels each
+    # bundle Intel's OpenMP runtime; loaded together they abort with
+    # "OMP: Error #15". kickvoice handles this itself at startup
+    # (src/kickvoice/_openmp.py): it sets KMP_DUPLICATE_LIB_OK=TRUE for its
+    # own processes, loads CTranslate2 before PyTorch and keeps PyTorch on one
+    # thread. Nothing has to be exported here or in run.sh. See "Intel Macs"
+    # in the README.
 elif [ "$OS" = "Darwin" ]; then
     # Apple Silicon — latest PyTorch from PyPI works natively
     info "Detected macOS Apple Silicon — installing latest PyTorch..."
@@ -293,3 +300,11 @@ printf "    ${CYAN}./run.sh extract-profiles --stream \"https://kick.com/channel
 printf "    ${CYAN}./run.sh monitor --stream \"https://kick.com/channel\"${NC}\n"
 printf "    ${CYAN}./run.sh transcribe --stream \"https://kick.com/channel\"${NC}\n"
 echo ""
+if [ "$IS_INTEL_MAC" = true ]; then
+    echo "  Intel Mac note: PyTorch and faster-whisper each bundle Intel's OpenMP"
+    echo "  runtime. So that they can run together, kickvoice sets"
+    echo "  KMP_DUPLICATE_LIB_OK=TRUE for its own processes and keeps PyTorch on one"
+    echo "  thread; you don't need to export anything. Details, the caveat and how to"
+    echo "  turn it off: README, \"Intel Macs\"."
+    echo ""
+fi

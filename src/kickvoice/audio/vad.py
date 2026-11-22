@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from kickvoice._openmp import import_torch
 from kickvoice.audio.ffmpeg import pcm_to_numpy, pcm_to_tensor
 from kickvoice.config import AudioConfig
 
@@ -78,6 +79,7 @@ class SileroVAD(BaseVAD):
     def _load_model(self):
         if self._model is not None:
             return
+        import_torch()  # before silero-vad imports it
         try:
             from silero_vad import get_speech_timestamps, load_silero_vad
 
@@ -85,7 +87,7 @@ class SileroVAD(BaseVAD):
             self._model = load_silero_vad()
             self._get_speech_timestamps = get_speech_timestamps
         except ImportError:
-            import torch
+            torch = import_torch()
 
             logger.info("Loading Silero VAD (torch.hub)")
             model, utils = torch.hub.load(
@@ -99,7 +101,7 @@ class SileroVAD(BaseVAD):
         logger.info("Silero VAD loaded")
 
     def detect_speech(self, pcm_bytes, threshold=None, min_duration_s=None):
-        import torch
+        torch = import_torch()
 
         self._load_model()
         threshold = threshold if threshold is not None else self.audio_cfg.vad_threshold

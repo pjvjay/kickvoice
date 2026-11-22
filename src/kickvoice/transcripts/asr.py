@@ -15,6 +15,7 @@ from typing import Protocol
 
 import numpy as np
 
+from kickvoice._openmp import whisper_cpu_threads
 from kickvoice.config import Config
 
 logger = logging.getLogger(__name__)
@@ -84,12 +85,20 @@ class FasterWhisperRecognizer:
             self.cfg.asr_device,
             self.cfg.asr_compute_type,
         )
+        threads = whisper_cpu_threads()
+        if threads:
+            logger.warning(
+                "PyTorch was loaded before CTranslate2, so Whisper runs on %d thread on this Intel Mac "
+                "(slower). See kickvoice/_openmp.py.",
+                threads,
+            )
         try:
             self._model = WhisperModel(
                 self.cfg.asr_model,
                 device=self.cfg.asr_device,
                 compute_type=self.cfg.asr_compute_type,
                 download_root=str(Path(self.config.data_dir) / "pretrained_models" / "whisper"),
+                **({"cpu_threads": threads} if threads else {}),
             )
         except Exception as e:  # network, disk, CUDA… — all fatal, all need a clear message
             first_line = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
