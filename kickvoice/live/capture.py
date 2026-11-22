@@ -57,32 +57,29 @@ class StreamCapture:
         logger.info(f"Resolving stream URL: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"streamlink failed: {result.stderr.strip()}"
-            )
+            # With --stream-url, streamlink reports errors (e.g. "No playable
+            # streams found" for an offline channel) on stdout, not stderr.
+            detail = (result.stderr.strip() or result.stdout.strip()
+                      or f"exit code {result.returncode}")
+            raise RuntimeError(f"streamlink failed: {detail}")
         url = result.stdout.strip()
         logger.info(f"Resolved HLS URL: {url[:80]}...")
         return url
 
-    def capture_chunks(self) -> Generator[bytes, None, None]:
+    def capture_chunks(
+        self,
+        chunk_duration_s: float | None = None,
+        chunk_stride_s: float | None = None,
+    ) -> Generator[bytes, None, None]:
         """
         Yield raw PCM audio chunks of `chunk_duration_s` length.
 
         Each chunk is `sample_rate * channels * 2 * chunk_duration_s` bytes
-        (16-bit = 2 bytes per sample).
+        (16-bit = 2 bytes per sample). Duration/stride default to the audio
+        config; pass both equal for non-overlapping blocks.
         """
-        bytes_per_sample = 2 * self.audio_cfg.channels
-        chunk_bytes = int(
-            self.audio_cfg.sample_rate
-            * self.audio_cfg.channels
-            * 2
-            * self.audio_cfg.chunk_duration_s
-        )
-        stride_bytes = int(
-            self.audio_cfg.sample_rate
-            * self.audio_cfg.channels
-            * 2
-            * self.audio_cfg.chunk_stride_s
+        chunk_bytes, stride_bytes = _chunk_sizes(
+            self.audio_cfg, chunk_duration_s, chunk_stride_s
         )
 
         # Resolve the actual stream URL via streamlink
@@ -167,20 +164,15 @@ class FileCapture:
             raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()}")
         return result.stdout
 
-    def capture_chunks(self) -> Generator[bytes, None, None]:
+    def capture_chunks(
+        self,
+        chunk_duration_s: float | None = None,
+        chunk_stride_s: float | None = None,
+    ) -> Generator[bytes, None, None]:
         """Yield PCM chunks from the file, simulating live capture."""
         pcm_data = self._convert_to_pcm()
-        chunk_bytes = int(
-            self.audio_cfg.sample_rate
-            * self.audio_cfg.channels
-            * 2
-            * self.audio_cfg.chunk_duration_s
-        )
-        stride_bytes = int(
-            self.audio_cfg.sample_rate
-            * self.audio_cfg.channels
-            * 2
-            * self.audio_cfg.chunk_stride_s
+        chunk_bytes, stride_bytes = _chunk_sizes(
+            self.audio_cfg, chunk_duration_s, chunk_stride_s
         )
 
         offset = 0
@@ -196,6 +188,22 @@ class FileCapture:
         if len(remaining) >= min_bytes:
             # Zero-pad to full chunk size
             yield remaining + b"\x00" * (chunk_bytes - len(remaining))
+
+
+def _chunk_sizes(
+    audio_cfg: AudioConfig,
+    chunk_duration_s: float | None,
+    chunk_stride_s: float | None,
+) -> tuple[int, int]:
+    """(chunk_bytes, stride_bytes) for s16le audio, falling back to config."""
+    bytes_per_s = audio_cfg.sample_rate * audio_cfg.channels * 2
+    dur = chunk_duration_s if chunk_duration_s is not None else audio_cfg.chunk_duration_s
+    stride = chunk_stride_s if chunk_stride_s is not None else audio_cfg.chunk_stride_s
+    # Keep byte counts sample-aligned so PCM never gets split mid-sample.
+    frame = 2 * audio_cfg.channels
+    chunk_bytes = int(bytes_per_s * dur) // frame * frame
+    stride_bytes = int(bytes_per_s * stride) // frame * frame
+    return chunk_bytes, stride_bytes
 
 
 def pcm_to_float(pcm_bytes: bytes) -> list[float]:

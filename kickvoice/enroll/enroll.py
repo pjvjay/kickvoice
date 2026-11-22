@@ -139,6 +139,7 @@ class Enroller:
             source_urls=[str(audio_path)],
             n_segments=len(segments),
             notes=notes,
+            speech_seconds=sum(s.duration_s for s in segments),
         )
 
         logger.info(
@@ -206,6 +207,7 @@ class Enroller:
             source_urls=urls,
             n_segments=len(all_segments),
             notes=notes,
+            speech_seconds=sum(s.duration_s for s in all_segments),
         )
 
         total_speech = sum(s.duration_s for s in all_segments)

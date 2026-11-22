@@ -37,10 +37,15 @@ class IdentifyResult:
 class SpeakerIdentifier:
     """Compares embeddings against enrolled speaker profiles."""
 
-    def __init__(self, config: Config | None = None):
+    def __init__(
+        self,
+        config: Config | None = None,
+        store: ProfileStore | None = None,
+    ):
         self.config = config or Config()
         self.id_cfg = self.config.identify
-        self.store = ProfileStore(config=self.config)
+        # Pass a shared store to see profiles added/updated during a session.
+        self.store = store or ProfileStore(config=self.config)
 
     @staticmethod
     def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
