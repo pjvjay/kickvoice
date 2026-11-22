@@ -3,8 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from kickvoice.storage.packs import PackError, export_pack, import_pack
-from kickvoice.storage.profiles import ProfileStore
+from kickvoice.speakers.packs import PackError, export_pack, import_pack
+from kickvoice.speakers.profiles import ProfileStore
 
 
 def unit(seed, dim=192):
@@ -34,6 +34,7 @@ def test_re_adding_reuses_file(config):
 def test_legacy_index_loads(config):
     """Index written by the previous version (no new fields) + unknown keys."""
     pdir = config.profiles_dir
+    pdir.mkdir(parents=True, exist_ok=True)
     np.save(pdir / "drdisrespect.npy", unit(5))
     (pdir / "index.json").write_text(json.dumps({"DrDisrespect": {
         "name": "DrDisrespect", "embedding_file": "drdisrespect.npy",

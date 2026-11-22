@@ -14,12 +14,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import wave
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+
+from kickvoice.audio.ffmpeg import write_wav
 
 PENDING = "pending"
 CREATED = "created"     # became a new profile
@@ -171,9 +172,3 @@ def channel_name(source: str) -> str | None:
     return None
 
 
-def write_wav(path: Path, pcm: bytes, sample_rate: int, channels: int = 1):
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(channels)
-        w.setsampwidth(2)
-        w.setframerate(sample_rate)
-        w.writeframes(pcm)

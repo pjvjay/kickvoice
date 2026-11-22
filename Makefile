@@ -37,13 +37,13 @@ install: venv ## Install kickvoice into venv (auto-detects platform)
 	else \
 		$(PIP) install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet; \
 	fi
-	@$(PIP) install -e ".[youtube,dev]" --quiet
+	@$(PIP) install -e ".[youtube,transcribe,dev]" --quiet
 	@$(PIP) install streamlink --quiet
 	@echo "✅ kickvoice installed"
 
 install-gpu: venv ## Install kickvoice with CUDA GPU support (Linux only)
 	@$(PIP) install torch torchaudio --quiet
-	@$(PIP) install -e ".[youtube,dev]" --quiet
+	@$(PIP) install -e ".[youtube,transcribe,dev]" --quiet
 	@$(PIP) install streamlink --quiet
 	@echo "✅ kickvoice installed (GPU)"
 
@@ -58,8 +58,8 @@ download-models: ## Pre-download ML models (~80MB)
 		); \
 		print('✅ ECAPA-TDNN ready')"
 	@$(PYTHON) -c "\
-		import torch; \
-		torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=False, onnx=False); \
+		from silero_vad import load_silero_vad; \
+		load_silero_vad(); \
 		print('✅ Silero VAD ready')"
 
 test: ## Run tests
@@ -71,6 +71,8 @@ verify: ## Verify all imports work
 		import torchaudio; print(f'  torchaudio   {torchaudio.__version__}'); \
 		import speechbrain; print(f'  speechbrain  {speechbrain.__version__}'); \
 		import streamlink; print(f'  streamlink   {streamlink.__version__}'); \
+		import click; print(f'  click        {click.__version__}'); \
+		import faster_whisper; print(f'  faster-whisper {faster_whisper.__version__}'); \
 		import numpy; print(f'  numpy        {numpy.__version__}'); \
 		import kickvoice; print(f'  kickvoice    {kickvoice.__version__}'); \
 		print('✅ All OK')"

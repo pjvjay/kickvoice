@@ -2,7 +2,7 @@
 Profile extraction: discover the distinct voices on a stream.
 
 Pipeline:
-    Stream/file → non-overlapping 30s blocks → VAD → 3s sliding windows
+    Stream/file → non-overlapping 30s blocks → VAD → short sliding windows (2s)
       → ECAPA embeddings → agglomerative clustering → one candidate per voice
       → match each candidate against known profiles → save session for review
 """
@@ -14,14 +14,21 @@ from typing import Callable
 
 import numpy as np
 
+from kickvoice import console
+from kickvoice.audio.capture import open_capture
+from kickvoice.audio.vad import get_vad
 from kickvoice.config import Config
-from kickvoice.extract.cluster import (
+from kickvoice.console import fmt_clock, fmt_duration
+from kickvoice.pipelines.session import ExtractionSession
+from kickvoice.speakers.cluster import (
     SpeakerCluster,
     cluster_speakers,
     make_windows,
     representative_windows,
 )
-from kickvoice.extract.session import ExtractionSession
+from kickvoice.speakers.encoder import SpeakerEncoder
+from kickvoice.speakers.identify import SpeakerIdentifier
+from kickvoice.speakers.profiles import ProfileStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,24 +37,6 @@ logger = logging.getLogger(__name__)
 class _Segment:
     start: int          # absolute sample offset in the capture
     pcm: bytes
-
-
-def fmt_duration(seconds: float) -> str:
-    seconds = int(round(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m:02d}m"
-    if m:
-        return f"{m}m {s:02d}s"
-    return f"{s}s"
-
-
-def fmt_clock(seconds: float) -> str:
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
 class ProfileExtractor:
@@ -70,7 +59,7 @@ class ProfileExtractor:
         vad=None,
         encoder=None,
         store=None,
-        out: Callable[[str], None] = print,
+        out: Callable[[str], None] = console.echo,
     ):
         if not (stream_url or file_path or capture):
             raise ValueError("Provide stream_url, file_path, or capture")
@@ -78,19 +67,14 @@ class ProfileExtractor:
         self.source = stream_url or str(file_path or "capture")
         self.out = out
 
-        # Heavy components are imported lazily so tests can inject fakes.
+        # Any component can be replaced (tests inject fakes; no model needed).
         if capture is None:
-            from kickvoice.live.capture import FileCapture, StreamCapture
-            capture = (StreamCapture(stream_url, config=self.config) if stream_url
-                       else FileCapture(file_path, config=self.config))
+            capture = open_capture(stream_url, file_path, config=self.config)
         if vad is None:
-            from kickvoice.live.detect import get_vad
             vad = get_vad(use_silero=True, audio_cfg=self.config.audio)
         if encoder is None:
-            from kickvoice.models.ecapa import SpeakerEncoder
             encoder = SpeakerEncoder(config=self.config)
         if store is None:
-            from kickvoice.storage.profiles import ProfileStore
             store = ProfileStore(config=self.config)
         self.capture, self.vad, self.encoder, self.store = capture, vad, encoder, store
 
@@ -159,7 +143,6 @@ class ProfileExtractor:
     def _best_match(self, centroid: np.ndarray):
         if self.store.count == 0:
             return None
-        from kickvoice.live.identify import SpeakerIdentifier
         return SpeakerIdentifier(config=self.config, store=self.store).identify(centroid)
 
     def run(self, max_duration_s: float | None = None) -> ExtractionSession | None:

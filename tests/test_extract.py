@@ -4,10 +4,10 @@ import wave
 import pytest
 
 from conftest import FakeCapture, FakeEncoder, conversation, voice_vector
-from kickvoice.extract.extractor import ProfileExtractor
-from kickvoice.extract.session import ExtractionSession, channel_name, find_session, source_slug
-from kickvoice.live.detect import EnergyVAD
-from kickvoice.storage.profiles import ProfileStore
+from kickvoice.pipelines.extract import ProfileExtractor
+from kickvoice.pipelines.session import ExtractionSession, channel_name, find_session, source_slug
+from kickvoice.audio.vad import EnergyVAD
+from kickvoice.speakers.profiles import ProfileStore
 
 HOST, GUEST, CAMEO = 220, 550, 880   # three synthetic "voices"
 

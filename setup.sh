@@ -158,7 +158,7 @@ fi
 
 # ── 6. Install kickvoice and remaining deps ──────────────────
 info "Installing kickvoice and dependencies..."
-pip install -e "${SCRIPT_DIR}[youtube,dev]" --quiet
+pip install -e "${SCRIPT_DIR}[youtube,transcribe,dev]" --quiet
 ok "kickvoice installed"
 
 # ── 7. Install streamlink ────────────────────────────────────
@@ -197,6 +197,18 @@ try:
     print(f'  streamlink   {streamlink.__version__}')
 except ImportError as e:
     errors.append(f'streamlink: {e}')
+
+try:
+    import click
+    print(f'  click        {click.__version__}')
+except ImportError as e:
+    errors.append(f'click: {e}')
+
+try:
+    import faster_whisper
+    print(f'  faster-whisper {faster_whisper.__version__}')
+except ImportError as e:
+    errors.append(f'faster-whisper: {e}')
 
 try:
     import numpy
@@ -244,16 +256,11 @@ print('Model downloaded and cached')
 "
     ok "ECAPA-TDNN model ready"
 
-    info "Downloading Silero VAD model..."
+    info "Loading Silero VAD model..."
     "$VENV_PYTHON" -c "
-import torch
-model, utils = torch.hub.load(
-    repo_or_dir='snakers4/silero-vad',
-    model='silero_vad',
-    force_reload=False,
-    onnx=False,
-)
-print('Silero VAD downloaded and cached')
+from silero_vad import load_silero_vad
+load_silero_vad()
+print('Silero VAD ready')
 "
     ok "Silero VAD model ready"
 fi
@@ -268,11 +275,14 @@ echo "  Activate the venv in your shell:"
 printf "    ${CYAN}source ${VENV_DIR}/bin/activate${NC}\n"
 echo ""
 echo "  Then use kickvoice:"
-printf "    ${CYAN}kickvoice enroll --name \"Speaker\" --file audio.wav${NC}\n"
+printf "    ${CYAN}kickvoice enroll \"Speaker\" --file audio.wav${NC}\n"
+printf "    ${CYAN}kickvoice extract-profiles --stream \"https://kick.com/channel\"${NC}\n"
 printf "    ${CYAN}kickvoice monitor --stream \"https://kick.com/channel\"${NC}\n"
 printf "    ${CYAN}kickvoice profiles list${NC}\n"
 echo ""
 echo "  Or use the wrapper script (auto-activates venv):"
-printf "    ${CYAN}./run.sh enroll --name \"Speaker\" --file audio.wav${NC}\n"
+printf "    ${CYAN}./run.sh enroll \"Speaker\" --file audio.wav${NC}\n"
+printf "    ${CYAN}./run.sh extract-profiles --stream \"https://kick.com/channel\"${NC}\n"
 printf "    ${CYAN}./run.sh monitor --stream \"https://kick.com/channel\"${NC}\n"
+printf "    ${CYAN}./run.sh transcribe --stream \"https://kick.com/channel\"${NC}\n"
 echo ""

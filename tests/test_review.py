@@ -2,11 +2,11 @@ import numpy as np
 import pytest
 
 from conftest import FakeCapture, FakeEncoder, ScriptedInput, conversation, voice_vector
-from kickvoice.extract.extractor import ProfileExtractor
-from kickvoice.extract.review import Reviewer
-from kickvoice.extract.session import CREATED, MERGED, PENDING, SKIPPED, ExtractionSession
-from kickvoice.live.detect import EnergyVAD
-from kickvoice.storage.profiles import ProfileStore
+from kickvoice.pipelines.extract import ProfileExtractor
+from kickvoice.pipelines.review import Reviewer
+from kickvoice.pipelines.session import CREATED, MERGED, PENDING, SKIPPED, ExtractionSession
+from kickvoice.audio.vad import EnergyVAD
+from kickvoice.speakers.profiles import ProfileStore
 
 HOST, GUEST = 220, 550
 

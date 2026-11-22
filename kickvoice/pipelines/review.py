@@ -21,11 +21,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from kickvoice import console
 from kickvoice.config import Config
-from kickvoice.extract.extractor import fmt_clock, fmt_duration
-from kickvoice.extract.session import (
+from kickvoice.console import fmt_clock, fmt_duration
+from kickvoice.pipelines.session import (
     CREATED, MERGED, SKIPPED, Candidate, ExtractionSession, channel_name,
 )
+from kickvoice.speakers.identify import SpeakerIdentifier
+from kickvoice.speakers.profiles import ProfileStore
 
 InputFn = Callable[[str], str]
 OutFn = Callable[[str], None]
@@ -68,15 +71,12 @@ class Reviewer:
         *,
         store=None,
         input_fn: InputFn = input,
-        out: OutFn = print,
+        out: OutFn = console.echo,
         player: PlayerFn | None = ffplay_player,
     ):
-        from kickvoice.live.identify import SpeakerIdentifier
-        from kickvoice.storage.profiles import ProfileStore
-
         self.session = session
         self.config = config or Config()
-        self.store = store or ProfileStore(config=self.config)
+        self.store = store if store is not None else ProfileStore(config=self.config)
         # Shares the store, so a profile approved for speaker 1 is matched
         # against speaker 2 (catches one voice split into two clusters).
         self.identifier = SpeakerIdentifier(config=self.config, store=self.store)

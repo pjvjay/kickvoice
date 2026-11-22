@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from kickvoice.config import Config
+from kickvoice.speakers.encoder import SpeakerEncoder
 
 SR = 16000
 DIM = 192
@@ -45,13 +46,19 @@ def conversation(turns: list[tuple[float, float]], gap: float = 0.6) -> bytes:
     return b"".join(out)
 
 
-class FakeEncoder:
-    """Maps a window to its dominant frequency's voiceprint (+ a little noise)."""
+class FakeEncoder(SpeakerEncoder):
+    """
+    Real encoder API, no model: maps a window to its dominant frequency's
+    voiceprint (+ a little noise). Subclassing keeps it honest — if the
+    encoder API changes, the fake changes with it.
+    """
 
-    def __init__(self, noise: float = 0.15, seed: int = 0):
+    def __init__(self, noise: float = 0.15, seed: int = 0, voices: dict | None = None):
+        super().__init__()
         self.noise = noise
         self.rng = np.random.default_rng(seed)
         self.calls = 0
+        self.voices = voices or {}          # freq → custom voiceprint (sound-alikes)
 
     def embed_pcm(self, pcm: bytes) -> np.ndarray:
         self.calls += 1
@@ -59,7 +66,8 @@ class FakeEncoder:
         spec = np.abs(np.fft.rfft(x))
         freq = np.fft.rfftfreq(len(x), 1 / SR)[spec.argmax()]
         bucket = round(freq / 10) * 10          # tolerate FFT bin jitter
-        v = voice_vector(bucket) + self.rng.normal(scale=self.noise / math.sqrt(DIM), size=DIM)
+        base = self.voices.get(bucket)
+        v = (voice_vector(bucket) if base is None else base) + self.rng.normal(scale=self.noise / math.sqrt(DIM), size=DIM)
         return v / np.linalg.norm(v)
 
 
@@ -93,3 +101,45 @@ class ScriptedInput:
         if not self.answers:
             raise EOFError
         return self.answers.pop(0)
+
+
+class FakeRecognizer:
+    """
+    ASR stand-in with Whisper's output shape: ~0.5s "words" over loud audio,
+    each named after the dominant pitch ("w220"), so tests can check which
+    voice every word was attributed to. `hallucinate=True` also emits a word
+    in the middle of every silence, like Whisper does over music/silence.
+    """
+
+    model_name = "fake-asr"
+
+    def __init__(self, word_s: float = 0.5, hallucinate: bool = False):
+        self.word_s = word_s
+        self.hallucinate = hallucinate
+        self.calls: list[float] = []          # duration of each audio passed in
+
+    def transcribe(self, audio, sample_rate):
+        from kickvoice.transcripts.asr import Word
+
+        self.calls.append(len(audio) / sample_rate)
+        frame = int(sample_rate * 0.03)
+        n = len(audio) // frame
+        loud = np.sqrt((audio[:n * frame].reshape(n, frame) ** 2).mean(axis=1)) > 0.02
+        padded = np.concatenate(([False], loud, [False]))
+        edges = np.flatnonzero(padded[1:] != padded[:-1])
+        words, prev_end = [], 0.0
+        for a, b in zip(edges[::2], edges[1::2]):
+            start, end = a * 0.03, b * 0.03
+            if self.hallucinate and start - prev_end > 0.5:
+                mid = (prev_end + start) / 2
+                words.append(Word(mid - 0.1, mid + 0.1, " thanks", 0.3))
+            t = start
+            while t < end - 0.05:
+                w_end = min(t + self.word_s, end)
+                seg = audio[int(t * sample_rate):int(w_end * sample_rate)]
+                spec = np.abs(np.fft.rfft(seg))
+                freq = round(np.fft.rfftfreq(len(seg), 1 / sample_rate)[spec.argmax()] / 10) * 10
+                words.append(Word(t, w_end, f" w{int(freq)}", 0.9))
+                t = w_end
+            prev_end = end
+        return words

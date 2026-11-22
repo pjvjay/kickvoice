@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from kickvoice.extract.cluster import (
+from kickvoice.speakers.cluster import (
     cluster_speakers, covered_seconds, make_windows, representative_windows,
 )
 

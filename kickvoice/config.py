@@ -1,23 +1,29 @@
 """
-kickvoice configuration
+kickvoice configuration.
+
+Defaults live here; `~/.kickvoice/config.json` overrides them, and CLI flags
+override that. Creating a Config has no side effects — directories are made
+when something is actually written.
 """
-from dataclasses import dataclass, field
-from pathlib import Path
+from __future__ import annotations
+
 import json
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
+
+DEFAULT_DATA_DIR = Path.home() / ".kickvoice"
 
 
 @dataclass
 class AudioConfig:
     sample_rate: int = 16000
     channels: int = 1
-    # Rolling capture window
+    # Rolling capture window used by `monitor`
     chunk_duration_s: float = 10.0
     chunk_stride_s: float = 5.0
     # VAD settings
     vad_threshold: float = 0.5
     min_speech_duration_s: float = 1.5
-    # ffmpeg format
-    format: str = "wav"
 
 
 @dataclass
@@ -26,15 +32,16 @@ class EmbeddingConfig:
     model_source: str = "speechbrain/spkrec-ecapa-voxceleb"
     model_savedir: str = "pretrained_models/ecapa"
     embedding_dim: int = 192
+    device: str = "cpu"          # "cuda" if you installed GPU PyTorch
 
 
 @dataclass
 class IdentifyConfig:
-    # Cosine similarity threshold for a positive match
+    # Cosine similarity needed to call it a match
     match_threshold: float = 0.60
-    # Above this = high confidence
+    # Above this, the match is reported as high confidence
     high_confidence_threshold: float = 0.75
-    # Top-N candidates to consider
+    # How many candidates to keep/show
     top_n: int = 3
 
 
@@ -67,53 +74,111 @@ class ExtractConfig:
 
 
 @dataclass
+class TranscribeConfig:
+    """Settings for `transcribe` (speaker-attributed transcripts)."""
+    # faster-whisper model: tiny / base / small / medium / large-v3, or a path.
+    # Bigger = more accurate but slower; on CPU, "small" keeps up with live
+    # speech on most machines. Watch the real-time factor printed while running.
+    asr_model: str = "small"
+    asr_device: str = "cpu"            # "cuda" with GPU PyTorch/CTranslate2
+    asr_compute_type: str = "int8"     # int8 is fastest on CPU; "float16" on GPU
+    language: str | None = None        # e.g. "en"; None = auto-detect
+    beam_size: int = 5
+    # Audio is processed in blocks; cuts are moved into pauses so words aren't
+    # split across blocks.
+    chunk_duration_s: float = 30.0
+    # VAD minimum for *transcription* (shorter than for profiling so short
+    # replies still appear in the transcript).
+    min_speech_s: float = 0.5
+    # Speaker-scoring windows (same idea as extract-profiles).
+    window_s: float = 2.0
+    window_hop_s: float = 1.0
+    min_window_s: float = 1.0
+    # A turn needs at least this much audio to be attributed "confident";
+    # shorter turns top out at "probable".
+    min_confident_turn_s: float = 2.0
+    # Split a speaker's turn at pauses longer than this.
+    max_pause_s: float = 1.0
+    # Store text from unrecognised voices (useful context for analysis, e.g.
+    # what the streamer is responding to). Set False to keep only enrolled
+    # speakers' words.
+    keep_unattributed: bool = True
+
+
+SECTIONS = {
+    "audio": AudioConfig,
+    "embedding": EmbeddingConfig,
+    "identify": IdentifyConfig,
+    "extract": ExtractConfig,
+    "transcribe": TranscribeConfig,
+}
+
+
+@dataclass
 class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     identify: IdentifyConfig = field(default_factory=IdentifyConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
-    # Paths
-    data_dir: Path = Path.home() / ".kickvoice"
-    profiles_dir: Path = Path.home() / ".kickvoice" / "profiles"
+    transcribe: TranscribeConfig = field(default_factory=TranscribeConfig)
+    data_dir: Path = DEFAULT_DATA_DIR
+    # Defaults to <data_dir>/profiles when not set explicitly.
+    profiles_dir: Path | None = None
+
+    def __post_init__(self):
+        self.data_dir = Path(self.data_dir)
+        self.profiles_dir = (Path(self.profiles_dir) if self.profiles_dir
+                             else self.data_dir / "profiles")
 
     @property
     def extractions_dir(self) -> Path:
         """Where extract-profiles sessions (candidates + review clips) live."""
-        return Path(self.data_dir) / "extractions"
+        return self.data_dir / "extractions"
 
-    def __post_init__(self):
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.profiles_dir.mkdir(parents=True, exist_ok=True)
+    @property
+    def transcripts_db(self) -> Path:
+        """SQLite database of speaker-attributed transcripts."""
+        return self.data_dir / "transcripts.db"
 
-    def save(self, path: Path | None = None):
-        path = path or (self.data_dir / "config.json")
-        data = {
-            "audio": self.audio.__dict__,
-            "embedding": self.embedding.__dict__,
-            "identify": self.identify.__dict__,
-            "extract": self.extract.__dict__,
-            "data_dir": str(self.data_dir),
-            "profiles_dir": str(self.profiles_dir),
-        }
-        path.write_text(json.dumps(data, indent=2))
+    @property
+    def config_path(self) -> Path:
+        return self.data_dir / "config.json"
+
+    # ── persistence ──────────────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        data = {name: asdict(getattr(self, name)) for name in SECTIONS}
+        data["data_dir"] = str(self.data_dir)
+        data["profiles_dir"] = str(self.profiles_dir)
+        return data
+
+    def save(self, path: Path | None = None) -> Path:
+        path = Path(path) if path else self.config_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+        return path
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
-        path = path or (Path.home() / ".kickvoice" / "config.json")
+        """
+        Read a config file. Missing file → defaults. Unknown keys are ignored
+        so a newer config doesn't break an older install.
+        """
+        path = Path(path) if path else DEFAULT_DATA_DIR / "config.json"
         if not path.exists():
             return cls()
-        data = json.loads(path.read_text())
-        cfg = cls()
-        for k, v in data.get("audio", {}).items():
-            setattr(cfg.audio, k, v)
-        for k, v in data.get("embedding", {}).items():
-            setattr(cfg.embedding, k, v)
-        for k, v in data.get("identify", {}).items():
-            setattr(cfg.identify, k, v)
-        for k, v in data.get("extract", {}).items():
-            setattr(cfg.extract, k, v)
-        if "data_dir" in data:
-            cfg.data_dir = Path(data["data_dir"])
-        if "profiles_dir" in data:
-            cfg.profiles_dir = Path(data["profiles_dir"])
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid config file {path}: {e}") from e
+
+        cfg = cls(
+            data_dir=Path(data["data_dir"]) if data.get("data_dir") else DEFAULT_DATA_DIR,
+            profiles_dir=Path(data["profiles_dir"]) if data.get("profiles_dir") else None,
+        )
+        for name, section_cls in SECTIONS.items():
+            known = {f.name for f in fields(section_cls)}
+            for key, value in (data.get(name) or {}).items():
+                if key in known:
+                    setattr(getattr(cfg, name), key, value)
         return cfg

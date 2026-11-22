@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from kickvoice.config import Config
-from kickvoice.storage.profiles import ProfileStore
+from kickvoice.speakers.profiles import ProfileStore
 
 PACK_FORMAT = "kickvoice-profile-pack"
 PACK_VERSION = 1
